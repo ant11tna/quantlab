@@ -52,7 +52,7 @@ def _pick_metric(metrics: dict, *keys: str):
     for key in keys:
         if key in metrics and metrics[key] is not None:
             return metrics[key]
-    for block in ("summary", "risk", "performance"):
+    for block in ("summary", "risk", "performance", "trading", "trade"):
         sub = metrics.get(block, {})
         if isinstance(sub, dict):
             for key in keys:
@@ -150,37 +150,52 @@ def _render_header(run_id: str, config: dict) -> None:
     page_header(t("detail.title"), t("detail.caption", run_id=run_id, started=f"{start or '-'} ~ {end or '-'}"), right=f"{t('runs.strategy')}: {strategy or '-'}")
 
 
-def _render_overview(metrics: dict, equity_df: pd.DataFrame) -> None:
-    section(t("detail.metrics"))
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric(t("detail.total_return"), _to_percent_text(_pick_metric(metrics, "total_return")))
-    c2.metric(t("runs.cagr"), _to_percent_text(_pick_metric(metrics, "cagr", "annual_return")))
-    sharpe = _pick_metric(metrics, "sharpe", "sharpe_ratio")
-    c3.metric(t("detail.sharpe"), "-" if sharpe is None or pd.isna(sharpe) else f"{float(sharpe):.3f}")
-    c4.metric(t("detail.max_drawdown"), _to_percent_text(_pick_metric(metrics, "max_drawdown", "drawdown_max")))
+def _metric_text(metrics: dict, key_pairs: tuple[str, ...], *, percent: bool = False, digits: int = 3) -> str:
+    value = _pick_metric(metrics, *key_pairs)
+    if value is None or pd.isna(value):
+        return "-"
+    if percent:
+        return f"{float(value) * 100:.2f}%"
+    return f"{float(value):.{digits}f}"
 
+
+def _render_overview(metrics: dict, equity_df: pd.DataFrame) -> None:
     stats = _calc_nav_stats(equity_df)
+
+    section(t("detail.group_return"))
+    r1 = st.columns(4)
+    r1[0].metric(t("detail.total_return"), _metric_text(metrics, ("total_return", "return_total"), percent=True))
+    r1[1].metric(t("runs.cagr"), _metric_text(metrics, ("cagr", "annual_return", "annualized_return"), percent=True))
+    r1[2].metric(t("detail.sharpe"), _metric_text(metrics, ("sharpe", "sharpe_ratio"), digits=3))
+    r1[3].metric(t("detail.win_rate"), _display(stats.get("win_rate"), percent=True) if stats else "-")
+
+    section(t("detail.group_risk"))
+    r2 = st.columns(4)
+    r2[0].metric(t("detail.max_drawdown"), _metric_text(metrics, ("max_drawdown", "drawdown_max"), percent=True))
+    r2[1].metric(t("detail.annual_vol"), _display(stats.get("annual_vol"), percent=True) if stats else "-")
+    r2[2].metric(t("detail.dd_days"), _display(stats.get("dd_days"), digits=0) if stats else "-")
+    dd_range = f"{_display(stats.get('dd_start'))} ~ {_display(stats.get('dd_end'))}" if stats else "-"
+    r2[3].metric(t("detail.dd_range"), dd_range)
+
+    section(t("detail.group_cost"))
+    r3 = st.columns(4)
+    r3[0].metric(t("detail.turnover"), _metric_text(metrics, ("turnover", "avg_turnover"), percent=True))
+    r3[1].metric(t("detail.total_fees"), _metric_text(metrics, ("total_fees", "fees_total", "fee_total"), digits=2))
+    r3[2].metric(t("detail.impact_cost"), _metric_text(metrics, ("impact_cost", "total_impact_cost"), digits=2))
+    r3[3].metric(t("detail.total_cost"), _metric_text(metrics, ("total_cost", "cost_total"), digits=2))
+
     section(t("detail.nav_summary"))
     if not stats:
         empty_state(t("detail.no_equity"))
         return
 
-    r1 = st.columns(4)
-    r1[0].metric(t("detail.sample_range"), f"{_display(stats.get('start'))} ~ {_display(stats.get('end'))}")
-    r1[1].metric(t("detail.sample_points"), _display(stats.get("points"), digits=0))
-    r1[2].metric(t("detail.annual_vol"), _display(stats.get("annual_vol"), percent=True))
-    r1[3].metric(t("detail.downside_vol"), _display(stats.get("downside_vol"), percent=True))
+    r4 = st.columns(4)
+    r4[0].metric(t("detail.sample_range"), f"{_display(stats.get('start'))} ~ {_display(stats.get('end'))}")
+    r4[1].metric(t("detail.sample_points"), _display(stats.get("points"), digits=0))
+    r4[2].metric(t("detail.downside_vol"), _display(stats.get("downside_vol"), percent=True))
+    r4[3].metric(t("detail.best_period"), _display(stats.get("best_period"), percent=True))
 
-    r2 = st.columns(4)
-    r2[0].metric(t("detail.win_rate"), _display(stats.get("win_rate"), percent=True))
-    r2[1].metric(t("detail.best_period"), _display(stats.get("best_period"), percent=True))
-    r2[2].metric(t("detail.worst_period"), _display(stats.get("worst_period"), percent=True))
-    r2[3].metric(t("detail.dd_days"), _display(stats.get("dd_days"), digits=0))
-
-    st.caption(
-        f"{t('detail.dd_range')}: {_display(stats.get('dd_start'))} ~ {_display(stats.get('dd_end'))} | "
-        f"{t('detail.max_drawdown')}: {_display(stats.get('max_drawdown'), percent=True)}"
-    )
+    st.caption(f"{t('detail.worst_period')}: {_display(stats.get('worst_period'), percent=True)}")
 
 
 def _render_nav_and_drawdown(equity_df: pd.DataFrame, metrics: dict) -> None:
