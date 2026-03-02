@@ -227,13 +227,18 @@ else:
         # Generate HTML with real data
         html = f"""
             <div id="tv" style="width:100%; height:460px;"></div>
-            <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+            <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
             <script>
                 const ohlc = {json.dumps(ohlcv_data["ohlc"])};
                 const volume = {json.dumps(ohlcv_data["volume"])};
                 const markers = {json.dumps(markers)};
                 
                 const container = document.getElementById('tv');
+                if (typeof LightweightCharts === 'undefined') {{
+                    container.innerHTML = '<div style="padding:12px;color:#b00020;font-family:sans-serif;">LightweightCharts 加载失败，请检查脚本地址或网络连接。</div>';
+                    throw new Error('LightweightCharts is not defined');
+                }}
+
                 const chart = LightweightCharts.createChart(container, {{
                     layout: {{
                         textColor: '#111',
@@ -255,6 +260,11 @@ else:
                         mode: LightweightCharts.CrosshairMode.Normal,
                     }},
                 }});
+
+                if (typeof chart.addCandlestickSeries !== 'function') {{
+                    container.innerHTML = '<div style="padding:12px;color:#b00020;font-family:sans-serif;">检测到 Lightweight Charts 不兼容版本：缺少 addCandlestickSeries。</div>';
+                    throw new Error('Incompatible lightweight-charts version: addCandlestickSeries is not available');
+                }}
                 
                 // Candlestick series
                 const candleSeries = chart.addCandlestickSeries({{
