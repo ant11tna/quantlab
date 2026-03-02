@@ -1,0 +1,136 @@
+# Asset Universe Configuration
+# Defines the trading universe and asset classifications
+
+universes:
+  # Example: Global multi-asset portfolio
+  global_balanced:
+    name: "Global Balanced Portfolio"
+    description: "Diversified global portfolio with equities, bonds, commodities, and alternatives"
+    base_currency: "USD"
+    
+    assets:
+      # US Equities
+      - symbol: "SPY"
+        name: "SPDR S&P 500 ETF"
+        asset_class: "equity"
+        region: "US"
+        sector: "broad"
+        min_weight: 0.0
+        max_weight: 0.50
+        
+      - symbol: "QQQ"
+        name: "Invesco QQQ Trust"
+        asset_class: "equity"
+        region: "US"
+        sector: "tech"
+        min_weight: 0.0
+        max_weight: 0.30
+        
+      # International Equities
+      - symbol: "VEA"
+        name: "Vanguard Developed Markets ETF"
+        asset_class: "equity"
+        region: "developed_ex_us"
+        sector: "broad"
+        min_weight: 0.0
+        max_weight: 0.25
+        
+      - symbol: "VWO"
+        name: "Vanguard Emerging Markets ETF"
+        asset_class: "equity"
+        region: "emerging"
+        sector: "broad"
+        min_weight: 0.0
+        max_weight: 0.15
+        
+      # Fixed Income
+      - symbol: "TLT"
+        name: "iShares 20+ Year Treasury ETF"
+        asset_class: "bond"
+        region: "US"
+        duration: "long"
+        min_weight: 0.0
+        max_weight: 0.30
+        
+      - symbol: "IEF"
+        name: "iShares 7-10 Year Treasury ETF"
+        asset_class: "bond"
+        region: "US"
+        duration: "intermediate"
+        min_weight: 0.0
+        max_weight: 0.30
+        
+      - symbol: "LQD"
+        name: "iShares Investment Grade Corporate ETF"
+        asset_class: "bond"
+        region: "US"
+        credit: "investment_grade"
+        min_weight: 0.0
+        max_weight: 0.20
+        
+      # Commodities
+      - symbol: "GLD"
+        name: "SPDR Gold Shares"
+        asset_class: "commodity"
+        commodity_type: "precious_metal"
+        min_weight: 0.0
+        max_weight: 0.20
+        
+      - symbol: "USO"
+        name: "United States Oil Fund"
+        asset_class: "commodity"
+        commodity_type: "energy"
+        min_weight: 0.0
+        max_weight: 0.15
+        
+      # Alternatives / Real Estate
+      - symbol: "VNQ"
+        name: "Vanguard Real Estate ETF"
+        asset_class: "reit"
+        region: "US"
+        min_weight: 0.0
+        max_weight: 0.15
+        
+    # Asset class constraints
+    asset_class_limits:
+      equity:
+        min: 0.30
+        max: 0.70
+      bond:
+        min: 0.20
+        max: 0.60
+      commodity:
+        min: 0.0
+        max: 0.25
+      reit:
+        min: 0.0
+        max: 0.15
+        
+    # Regional constraints
+    regional_limits:
+      US:
+        min: 0.40
+        max: 0.80
+      developed_ex_us:
+        min: 0.10
+        max: 0.30
+      emerging:
+        min: 0.0
+        max: 0.15
+
+  # Example: Simple US equity-bond portfolio
+  us_simple:
+    name: "Simple US 60/40"
+    description: "Classic US 60/40 portfolio"
+    base_currency: "USD"
+    
+    assets:
+      - symbol: "SPY"
+        asset_class: "equity"
+        min_weight: 0.40
+        max_weight: 0.80
+        
+      - symbol: "TLT"
+        asset_class: "bond"
+        min_weight: 0.20
+        max_weight: 0.60

@@ -1,0 +1,63 @@
+# Trading Calendars Configuration
+
+default_calendar: "US"
+
+calendars:
+  US:
+    exchange_code: "XNYS"  # NYSE
+    timezone: "America/New_York"
+    market_open: "09:30"
+    market_close: "16:00"
+    
+  CN:
+    exchange_code: "XSHG"  # Shanghai
+    timezone: "Asia/Shanghai"
+    market_open: "09:30"
+    market_close: "15:00"
+    
+  HK:
+    exchange_code: "XHKG"  # Hong Kong
+    timezone: "Asia/Hong_Kong"
+    market_open: "09:30"
+    market_close: "16:00"
+    
+  JP:
+    exchange_code: "XTKS"  # Tokyo
+    timezone: "Asia/Tokyo"
+    market_open: "09:00"
+    market_close: "15:00"
+    
+  UK:
+    exchange_code: "XLON"  # London
+    timezone: "Europe/London"
+    market_open: "08:00"
+    market_close: "16:30"
+
+# Rebalancing schedules
+rebalance_schedules:
+  monthly_end:
+    frequency: "monthly"
+    day: "last_trading"  # last_trading, first_trading, or specific day number
+    time: "16:00:00"
+    
+  monthly_start:
+    frequency: "monthly"
+    day: "first_trading"
+    time: "09:30:00"
+    
+  quarterly_end:
+    frequency: "quarterly"
+    day: "last_trading"
+    time: "16:00:00"
+    months: [3, 6, 9, 12]
+    
+  weekly_friday:
+    frequency: "weekly"
+    day: "Friday"
+    time: "16:00:00"
+
+# Threshold-based rebalancing
+threshold_rebalance:
+  default_threshold: 0.05  # 5% deviation triggers rebalance
+  min_days_between: 5      # Minimum days between rebalances
+  max_delay_days: 3        # Max days to delay if not trading day

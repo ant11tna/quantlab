@@ -1,0 +1,162 @@
+# Default Backtest Configuration
+
+default:
+  # Time range
+  start_date: "2020-01-01"
+  end_date: "2024-12-31"
+  
+  # Data settings
+  data:
+    price_column: "close"
+    frequency: "daily"
+    adjust_for_splits: true
+    adjust_for_dividends: true
+    
+  # Execution settings
+  execution:
+    fill_at: "close"           # close, open, vwap
+    slippage_model: "us_etfs"
+    allow_partial_fills: true
+    participation_rate: 0.2    # 单根 bar 最大成交占比 (20%)
+    min_lot: 1                 # 最小成交单位 (股票=1，基金可设 0.000001)
+    impact_k_bps: 20           # 冲击成本系数 (容量敏感)
+    impact_alpha: 0.5          # 冲击曲线非线性指数 (0.5=平方根)
+    
+  # Rebalancing
+  rebalancing:
+    mode: "periodic"  # periodic, threshold, or both
+    frequency: "M"    # M=monthly, Q=quarterly, W=weekly
+    threshold: null   # For threshold mode: e.g., 0.05 for 5%
+    
+  # Initial capital
+  capital:
+    initial: 1000000.0  # $1M USD
+    currency: "USD"
+    
+  # Risk constraints
+  risk:
+    # Position limits
+    max_position_weight: 0.50      # 单资产最大权重
+    min_position_weight: null      # 单资产最小权重 (可选)
+    
+    # Sector/Group limits  
+    max_sector_weight: 0.60        # 行业最大权重
+    
+    # Portfolio limits
+    max_leverage: 1.5              # 最大杠杆率 (总敞口 / NAV)
+    min_cash_ratio: 0.00           # 最小现金比例
+    max_cash_ratio: null           # 最大现金比例 (可选)
+    max_drawdown_stop: null        # 回撤止损 (如 0.20 表示 20%)
+    
+    # Turnover limits
+    max_turnover: 0.50             # 单次再平衡最大换手率 (0.5 = 50%)
+    max_annual_turnover: null      # 年度最大换手率 (可选)
+    
+    # Constraint enforcement mode
+    # strict_mode: false  -> WARN:  记录违规但继续运行 (默认)
+    # strict_mode: true   -> ERROR: 违规时抛出异常 (严格)
+    strict_mode: false
+    
+  # Benchmark
+  benchmark:
+    symbol: "SPY"
+    name: "S&P 500"
+    
+  # Reporting
+  report:
+    generate_charts: true
+    save_trades: true
+    save_weights: true
+    metrics_format: "json"  # json, csv
+    
+  # Constraint enforcement behavior
+  # When weights violate constraints:
+  # - "clip":   Auto-scale weights to meet constraints (default)
+  # - "strict": Raise exception on violation (fail fast)
+  constraint_mode: "clip"
+
+# Named configurations for specific experiments
+configs:
+  monthly_rebalance:
+    rebalancing:
+      mode: "periodic"
+      frequency: "M"
+      
+  quarterly_rebalance:
+    rebalancing:
+      mode: "periodic"
+      frequency: "Q"
+      
+  threshold_5pct:
+    rebalancing:
+      mode: "threshold"
+      threshold: 0.05
+      
+  zero_cost_baseline:
+    execution:
+      slippage_model: "zero"
+    report:
+      description: "Baseline without transaction costs"
+
+# Market-specific execution profiles
+# Usage: python -m quantlab backtest --profile us_equity
+profiles:
+  # US Equities / ETFs (T+0, fractional shares allowed)
+  us_equity:
+    execution:
+      fill_at: "close"
+      slippage_model: "us_etfs"
+      allow_partial_fills: true
+      participation_rate: 0.2
+      lot_size: 1              # 1 share units
+      min_trade_qty: 1         # Minimum 1 share
+      enforce_t1: false        # T+0 settlement (can sell same day)
+      impact_k_bps: 20
+      impact_alpha: 0.5
+    capital:
+      initial: 1000000.0
+      currency: "USD"
+    benchmark:
+      symbol: "SPY"
+      name: "S&P 500"
+
+  # China A-Shares (T+1, lot size 100)
+  china_ashare:
+    execution:
+      fill_at: "close"
+      slippage_model: "china_ashares"
+      allow_partial_fills: true
+      participation_rate: 0.2
+      lot_size: 100            # 1 lot = 100 shares (一手)
+      min_trade_qty: 100       # Minimum 1 lot
+      enforce_t1: true         # T+1 settlement (cannot sell same day)
+      impact_k_bps: 20
+      impact_alpha: 0.5
+    capital:
+      initial: 10000000.0      # 10M CNY
+      currency: "CNY"
+    benchmark:
+      symbol: "000300"         # 沪深300
+      name: "CSI 300"
+    risk:
+      max_position_weight: 0.20   # A股通常更分散
+      max_turnover: 0.30          # A股换手率约束更严
+
+  # Cryptocurrency (24/7, fractional, high impact)
+  crypto:
+    execution:
+      fill_at: "close"
+      slippage_model: "crypto"
+      allow_partial_fills: true
+      participation_rate: 0.1   # Lower participation for illiquid crypto
+      lot_size: 1
+      min_trade_qty: 0.0001     # Fractional allowed
+      enforce_t1: false         # No settlement delay
+      impact_k_bps: 50          # Higher impact cost
+      impact_alpha: 0.6         # Steeper impact curve
+    capital:
+      initial: 100000.0
+      currency: "USD"
+    benchmark:
+      symbol: "BTC"
+      name: "Bitcoin"

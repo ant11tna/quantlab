@@ -1,0 +1,4 @@
+default:
+  execution:
+    participation_rate: 0.2
+    min_lot: 1

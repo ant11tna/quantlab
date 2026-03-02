@@ -1,0 +1,82 @@
+# Data Sources Configuration for AkShare
+# Defines ETF and Index symbols to fetch and update
+
+# ETF Configuration (Tradeable instruments)
+etf:
+  enabled: true
+  adjust: "qfq"           # 前复权: "qfq" | 后复权: "hfq" | 不复权: ""
+  period: "daily"         # 日线数据
+  
+  # ETF symbols to fetch
+  # Format: exchange code (AkShare uses different interfaces for different markets)
+  symbols:
+    - "510300"            # 华泰柏瑞沪深300ETF
+    - "510500"            # 南方中证500ETF  
+    - "159915"            # 易方达创业板ETF
+    - "588000"            # 华夏上证科创板50ETF
+    - "511010"            # 国泰上证10年期国债ETF
+    - "518880"            # 华安黄金ETF
+    - "513500"            # 博时标普500ETF (QDII)
+    - "513100"            # 国泰纳斯达克100ETF (QDII)
+    - "159920"            # 华夏恒生ETF (QDII)
+  
+  # Output directory for raw CSV bars (before curation)
+  out_dir: "data/raw/bars/etf"
+  
+  # Symbol prefix for internal naming
+  symbol_prefix: "ETF"
+  
+  # Update settings
+  update:
+    skip_if_recent: 6    # Skip if data is within N hours (avoid intraday re-fetch)
+    retry_count: 3       # Retry failed requests
+    timeout: 30          # Request timeout seconds
+
+# Index Configuration (Benchmarks only, not tradeable)
+index:
+  enabled: true
+  period: "daily"
+  
+  # Index symbols to fetch
+  # Format: AkShare index code format
+  symbols:
+    - "000300"            # 沪深300指数 (sh000300 in AkShare)
+    - "000905"            # 中证500指数 (sh000905 in AkShare)
+    - "000016"            # 上证50指数
+    - "399006"            # 创业板指数 (sz399006 in AkShare)
+    - "000688"            # 科创50指数
+    - "HSI"               # 恒生指数 (may need specific AkShare interface)
+    # Note: S&P 500 and other foreign indices may require specific interfaces
+  
+  # Output directory for raw CSV bars (before curation)
+  out_dir: "data/raw/bars/index"
+  
+  # Symbol prefix for internal naming
+  symbol_prefix: "IDX"
+  
+  # Update settings
+  update:
+    skip_if_recent: 6
+    retry_count: 3
+    timeout: 30
+
+# Data validation rules
+validation:
+  check_ohlc: true        # Check high >= max(open, close), low <= min(open, close)
+  check_volume: true      # Check volume >= 0
+  check_duplicates: true  # Check no duplicate timestamps
+  check_sorted: true      # Check timestamps are sorted
+  auto_fix: false         # Auto-fix minor issues (use with caution)
+
+# Manifest settings
+manifest:
+  dir: "data/manifest"
+  etf_file: "etf.json"
+  index_file: "index.json"
+  
+# Logging
+logging:
+  level: "INFO"
+  file: "data/update.log"
+  max_size_mb: 10
+  backup_count: 3

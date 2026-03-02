@@ -1,0 +1,103 @@
+# Fee and Transaction Cost Models
+
+default_model: "us_etfs"
+
+models:
+  # US ETF trading costs
+  us_etfs:
+    name: "US ETF Trading Costs"
+    description: "Typical costs for trading US-listed ETFs"
+    
+    commission:
+      type: "zero"  # zero, fixed_per_share, percentage
+      value: 0.0
+      
+    spread:
+      type: "percentage"
+      value: 0.0005  # 5 bps typical spread
+      
+    slippage:
+      model: "fixed_percentage"  # fixed_percentage, volume_dependent
+      value: 0.0002  # 2 bps slippage
+      
+    market_impact:
+      enabled: false
+      
+    borrow_cost:
+      enabled: false  # For short selling
+
+  # More realistic model with volume-dependent slippage
+  realistic:
+    name: "Realistic Trading Costs"
+    description: "Volume-dependent slippage model"
+    
+    commission:
+      type: "zero"
+      value: 0.0
+      
+    spread:
+      type: "percentage"
+      value: 0.001  # 10 bps
+      
+    slippage:
+      model: "volume_dependent"
+      base_bps: 2.0
+      volume_factor: 0.1  # Increase with order size relative to volume
+      
+    market_impact:
+      enabled: true
+      permanent_impact: 0.1
+      temporary_impact: 0.2
+
+  # High-frequency trading model (lower costs)
+  hft:
+    name: "HFT Costs"
+    description: "Low costs for high-frequency strategies"
+    
+    commission:
+      type: "fixed_per_share"
+      value: 0.001  # $0.001 per share
+      
+    spread:
+      type: "percentage"
+      value: 0.0002  # 2 bps
+      
+    slippage:
+      model: "fixed_percentage"
+      value: 0.0001  # 1 bp
+      
+    market_impact:
+      enabled: false
+
+  # Zero cost (for baseline comparison)
+  zero:
+    name: "Zero Costs"
+    description: "No transaction costs for baseline analysis"
+    
+    commission:
+      type: "zero"
+      value: 0.0
+      
+    spread:
+      type: "percentage"
+      value: 0.0
+      
+    slippage:
+      model: "fixed_percentage"
+      value: 0.0
+      
+    market_impact:
+      enabled: false
+
+# Tax considerations (for future implementation)
+tax:
+  us:
+    short_term_capital_gains: 0.37  # Maximum rate
+    long_term_capital_gains: 0.20   # Maximum rate
+    long_term_holding_period: 365   # Days
+    
+  hong_kong:
+    capital_gains_tax: 0.0  # No capital gains tax
+    
+  singapore:
+    capital_gains_tax: 0.0  # No capital gains tax
