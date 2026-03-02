@@ -27,6 +27,7 @@ st.sidebar.title(t("app.nav"))
 pages = {
     "runs": t("app.runs"),
     "detail": t("app.run_detail"),
+    "compare": "Compare Runs",
     "settings": t("app.settings"),
 }
 
@@ -40,5 +41,7 @@ if choice == "runs":
     st.switch_page("pages/1_runs.py")
 elif choice == "detail":
     st.switch_page("pages/2_run_detail.py")
+elif choice == "compare":
+    st.switch_page("pages/3_compare_runs.py")
 else:
     st.info(t("app.settings_soon"))

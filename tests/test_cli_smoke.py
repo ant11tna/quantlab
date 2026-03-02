@@ -39,5 +39,19 @@ def test_cli_backtest_smoke() -> None:
     assert weights_path.exists(), f"missing {weights_path}"
 
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-    for key in ["total_return", "max_drawdown", "sharpe"]:
-        assert key in metrics.get("summary", {}) or key in metrics, f"missing metric key: {key}"
+
+    # Metrics schema v1.0
+    for section in ["meta", "config", "performance", "risk", "trade", "benchmark"]:
+        assert section in metrics, f"missing metrics section: {section}"
+
+    assert isinstance(metrics["meta"].get("created_at"), str)
+    assert "T" in metrics["meta"]["created_at"], "created_at should be ISO format"
+    assert metrics["meta"].get("schema_version") == "1.0"
+    assert "git_commit" in metrics["meta"]
+
+    for key in ["symbols", "start", "end", "initial_cash", "rebalance", "fee", "slippage", "strategy", "strategy_params"]:
+        assert key in metrics["config"], f"missing config key: {key}"
+
+    for key in ["total_return", "max_drawdown", "volatility"]:
+        value = metrics["performance"].get(key)
+        assert value is None or isinstance(value, float), f"{key} must be decimal float or null"
