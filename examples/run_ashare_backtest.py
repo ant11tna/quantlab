@@ -89,7 +89,13 @@ def load_curated_data(symbols: list[str]) -> pd.DataFrame:
 
 def check_and_prepare_data():
     """检查并准备数据"""
+    raw_root = Path("data/raw/bars")
+    curated_root = Path("data/curated/bars")
     curated_dir = Path("data/curated/bars/etf")
+
+    # 自动创建基础目录，避免依赖手工初始化
+    raw_root.mkdir(parents=True, exist_ok=True)
+    curated_root.mkdir(parents=True, exist_ok=True)
     
     if not curated_dir.exists() or not list(curated_dir.glob("*.parquet")):
         logger.info("Curated data not found, preparing data...")
@@ -107,7 +113,15 @@ def check_and_prepare_data():
         # 2. 加工数据
         logger.info("[2/2] Curating data (add regime fields)...")
         result = subprocess.run(
-            [sys.executable, "scripts/curate_data.py", "--all"],
+            [
+                sys.executable,
+                "scripts/curate_data.py",
+                "--all",
+                "--in-dir",
+                str(raw_root),
+                "--out-dir",
+                str(curated_root),
+            ],
             capture_output=True, text=True
         )
         if result.returncode != 0:

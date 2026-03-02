@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -29,31 +30,52 @@ from quantlab.data.transforms import apply_curated_transforms
 from quantlab.data.schema import validate_bars_df, SCHEMA_CURATED_V1
 
 
+
+
+@dataclass
+class CuratedDataBuilderConfig:
+    """Configuration for curated data builder paths."""
+
+    raw_dir: Path = Path("data/raw/bars")
+    curated_root: Path = Path("data/curated/bars")
+    index_file: str = "curated_index.json"
+
+
 class CuratedDataBuilder:
     """Build curated parquet files from raw CSV data."""
     
     # Default paths (CSV raw -> Parquet curated)
     DEFAULT_RAW_DIR = Path("data/raw/bars")      # Input: raw CSV from update_data.py
-    DEFAULT_OUT_DIR = Path("data/curated/bars")  # Output: curated Parquet
+    DEFAULT_CURATED_ROOT = Path("data/curated/bars")  # Output: curated Parquet
     DEFAULT_INDEX_FILE = "curated_index.json"
     
     def __init__(
         self,
         raw_dir: Optional[Path] = None,
+        curated_root: Optional[Path] = None,
         out_dir: Optional[Path] = None,
-        index_file: Optional[str] = None
+        index_file: Optional[str] = None,
+        config: Optional[CuratedDataBuilderConfig] = None,
     ):
         """Initialize builder.
         
         Args:
-            raw_dir: Directory containing raw CSV files (default: data/curated/bars)
-            out_dir: Directory for output parquet files (default: data/curated/bars)
+            raw_dir: Directory containing raw CSV files (default: data/raw/bars)
+            curated_root: Directory for output parquet files (default: data/curated/bars)
+            out_dir: Backward-compatible alias of curated_root
             index_file: Name of the index JSON file
+            config: Optional typed configuration
         """
-        self.raw_dir = Path(raw_dir) if raw_dir else self.DEFAULT_RAW_DIR
-        self.out_dir = Path(out_dir) if out_dir else self.DEFAULT_OUT_DIR
-        self.index_file = index_file or self.DEFAULT_INDEX_FILE
-        
+        if config is not None:
+            self.raw_dir = Path(config.raw_dir)
+            self.out_dir = Path(config.curated_root)
+            self.index_file = config.index_file
+        else:
+            self.raw_dir = Path(raw_dir) if raw_dir else self.DEFAULT_RAW_DIR
+            resolved_out_dir = curated_root or out_dir
+            self.out_dir = Path(resolved_out_dir) if resolved_out_dir else self.DEFAULT_CURATED_ROOT
+            self.index_file = index_file or self.DEFAULT_INDEX_FILE
+
         self.out_dir.mkdir(parents=True, exist_ok=True)
         
         # Track built symbols for index
@@ -247,6 +269,9 @@ class CuratedDataBuilder:
         Returns:
             Dict mapping symbol -> parquet path
         """
+        if not self.raw_dir.exists():
+            raise FileNotFoundError(f"Input directory not found: {self.raw_dir}")
+
         csv_files = self._find_csv_files()
         
         if not csv_files:
@@ -337,7 +362,7 @@ def build_curated_bars_from_csv_dir(
     """
     builder = CuratedDataBuilder(
         raw_dir=in_dir,
-        out_dir=out_dir,
+        curated_root=out_dir,
         index_file=index_path.name if index_path else "curated_index.json"
     )
     
@@ -349,7 +374,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Build curated parquet from CSV")
-    parser.add_argument("--in-dir", default="data/curated/bars", help="Input CSV directory")
+    parser.add_argument("--in-dir", default="data/raw/bars", help="Input CSV directory")
     parser.add_argument("--out-dir", default="data/curated/bars", help="Output parquet directory")
     parser.add_argument("--symbol", help="Build specific symbol only")
     parser.add_argument("--validate", action="store_true", default=True, help="Validate outputs")
@@ -358,7 +383,7 @@ if __name__ == "__main__":
     
     builder = CuratedDataBuilder(
         raw_dir=Path(args.in_dir),
-        out_dir=Path(args.out_dir)
+        curated_root=Path(args.out_dir)
     )
     
     if args.symbol:
