@@ -377,6 +377,7 @@ if __name__ == "__main__":
     parser.add_argument("--in-dir", default="data/raw/bars", help="Input CSV directory")
     parser.add_argument("--out-dir", default="data/curated/bars", help="Output parquet directory")
     parser.add_argument("--symbol", help="Build specific symbol only")
+    parser.add_argument("--all", action="store_true", help="Build all symbols (explicit flag, default behavior)")
     parser.add_argument("--validate", action="store_true", default=True, help="Validate outputs")
     
     args = parser.parse_args()
@@ -386,7 +387,7 @@ if __name__ == "__main__":
         curated_root=Path(args.out_dir)
     )
     
-    if args.symbol:
+    if args.symbol and not args.all:
         # Build single symbol
         csv_path = Path(args.in_dir) / f"{args.symbol}.csv"
         if not csv_path.exists():

@@ -116,3 +116,15 @@ uv run quantlab backtest --config config/backtest.yaml --profile us_equity
 - **OrderIntent**: 交易意图 (ts, symbol, target_qty/weight, urgency)
 - **Order/Fill**: 订单与成交记录
 - **PortfolioState**: 组合状态
+
+## 开发检查
+
+```bash
+# 仅检查当前分支相对 main 的 Python 改动
+python scripts/lint_changed.py
+
+# 或仅检查指定目录/模块
+python scripts/lint_changed.py src/quantlab/backtest
+```
+
+说明：该脚本优先使用 `origin/main...HEAD`，若本地无 `origin/main` 则自动回退到 `HEAD~1...HEAD`。
