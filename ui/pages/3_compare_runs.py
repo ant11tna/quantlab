@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from components import empty_state, page_header, section
+from components.common import info_card
 from i18n import t
 from quantlab.assets import group_weights_by_asset_class, load_assets_map
 
@@ -119,9 +120,10 @@ def _build_compare_metrics(selected_runs: list[str], run_index_df: pd.DataFrame)
     return pd.DataFrame(rows)
 
 
-def _build_nav_compare(selected_runs: list[str], run_index_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    merged = None
+def _build_nav_compare(selected_runs: list[str], run_index_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str], dict[str, pd.DataFrame], tuple[pd.Timestamp, pd.Timestamp] | None]:
     warnings: list[str] = []
+    run_nav_map: dict[str, pd.DataFrame] = {}
+
     for run_id in selected_runs:
         item = run_index_df[run_index_df["run_id"] == run_id]
         if item.empty:
@@ -131,15 +133,34 @@ def _build_nav_compare(selected_runs: list[str], run_index_df: pd.DataFrame) -> 
         if eq.empty:
             warnings.append(f"{run_id}: {t('compare.no_nav_for_run')}")
             continue
-        base = eq["nav"].iloc[0]
+        run_nav_map[run_id] = eq
+
+    if len(run_nav_map) < 2:
+        return pd.DataFrame(), warnings, run_nav_map, None
+
+    intersection_start = max(df["ts"].min() for df in run_nav_map.values())
+    intersection_end = min(df["ts"].max() for df in run_nav_map.values())
+    if pd.isna(intersection_start) or pd.isna(intersection_end) or intersection_start > intersection_end:
+        return pd.DataFrame(), warnings, run_nav_map, None
+
+    merged = None
+    for run_id, eq in run_nav_map.items():
+        truncated = eq[(eq["ts"] >= intersection_start) & (eq["ts"] <= intersection_end)].copy()
+        if truncated.empty:
+            warnings.append(f"{run_id}: {t('compare.no_overlap')}")
+            continue
+        base = truncated["nav"].iloc[0]
         if pd.isna(base) or base == 0:
             warnings.append(f"{run_id}: {t('compare.invalid_base_nav')}")
             continue
-        s = eq.assign(**{run_id: eq["nav"] / base})[["ts", run_id]]
+        if eq["ts"].min() < intersection_start or eq["ts"].max() > intersection_end:
+            warnings.append(f"{run_id}: {t('compare.truncated_to_intersection')}")
+        s = truncated.assign(**{run_id: truncated["nav"] / base})[["ts", run_id]]
         merged = s if merged is None else pd.merge(merged, s, on="ts", how="inner")
+
     if merged is None or merged.empty:
-        return pd.DataFrame(), warnings
-    return merged.sort_values("ts").set_index("ts"), warnings
+        return pd.DataFrame(), warnings, run_nav_map, (intersection_start, intersection_end)
+    return merged.sort_values("ts").set_index("ts"), warnings, run_nav_map, (intersection_start, intersection_end)
 
 
 def _drawdown_df(nav_df: pd.DataFrame) -> pd.DataFrame:
@@ -195,19 +216,28 @@ def main() -> None:
         return
 
     options = runs_df["run_id"].tolist()
-    selected_runs = st.multiselect(t("compare.select_runs"), options=options, default=options[:2])
+    preselected = st.query_params.get("run_ids", "")
+    default_selected = [rid for rid in str(preselected).split(",") if rid in options] if preselected else options[:2]
+    if len(default_selected) < 2:
+        default_selected = options[:2]
+    selected_runs = st.multiselect(t("compare.select_runs"), options=options, default=default_selected)
     if len(selected_runs) < 2:
         st.warning(t("compare.need_two"))
         return
 
-    nav_df, nav_warnings = _build_nav_compare(selected_runs, runs_df)
+    nav_df, nav_warnings, _, intersection = _build_nav_compare(selected_runs, runs_df)
+    if intersection is not None:
+        start, end = intersection
+        points = len(nav_df) if not nav_df.empty else 0
+        info_card(
+            t("compare.intersection_card_title"),
+            t("compare.intersection", start=start.date(), end=end.date(), points=points),
+        )
     for msg in nav_warnings:
         st.warning(msg)
     if nav_df.empty or nav_df.shape[1] < 2:
         empty_state(t("compare.no_overlap"))
         return
-
-    st.caption(t("compare.intersection", start=nav_df.index.min().date(), end=nav_df.index.max().date(), points=len(nav_df)))
 
     section(t("compare.metrics_section"))
     metrics_df = _build_compare_metrics(selected_runs, runs_df)

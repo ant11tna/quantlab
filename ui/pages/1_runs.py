@@ -141,6 +141,21 @@ def _apply_filters(runs_df: pd.DataFrame, keyword: str, recent_days: str) -> pd.
     return filtered.sort_values(by="created_at", ascending=False, na_position="last")
 
 
+def _apply_sorting(runs_df: pd.DataFrame, sort_by: str) -> pd.DataFrame:
+    if runs_df.empty:
+        return runs_df
+    col_map = {
+        "total_return": ("total_return", False),
+        "sharpe": ("sharpe", False),
+        "max_drawdown": ("max_drawdown", True),
+        "cagr": ("cagr", False),
+    }
+    column, asc = col_map.get(sort_by, ("created_at", False))
+    if column not in runs_df.columns:
+        return runs_df
+    return runs_df.sort_values(by=column, ascending=asc, na_position="last")
+
+
 def main() -> None:
     st.set_page_config(page_title=t("app.title") + " - " + t("app.runs"), page_icon="📊", layout="wide")
     page_header(t("runs.title"), t("runs.subtitle"))
@@ -160,12 +175,18 @@ def main() -> None:
     k4.metric(t("runs.kpi_worst_drawdown"), _fmt_num(runs_df["max_drawdown"].min(), "{:.2%}"))
 
     section(t("runs.filter_section"))
-    f1, f2 = st.columns([2, 1])
+    f1, f2, f3 = st.columns([2, 1, 1])
     keyword = f1.text_input(t("runs.search_keyword"), placeholder=t("runs.search_placeholder"))
     recent_label = f2.selectbox(t("runs.recent_days"), options=["7", "30", "90", "all"], format_func=lambda x: t(f"runs.recent_{x}"))
+    sort_by = f3.selectbox(
+        t("runs.sort_by"),
+        options=["total_return", "sharpe", "max_drawdown", "cagr"],
+        format_func=lambda x: t(f"runs.sort_{x}"),
+    )
     st.caption(t("runs.time_source"))
 
     filtered = _apply_filters(runs_df, keyword, recent_label)
+    filtered = _apply_sorting(filtered, sort_by)
     if filtered.empty:
         empty_state(t("runs.filtered_empty"), t("runs.filtered_empty_hint"))
         st.session_state.pop("selected_run_id", None)
@@ -204,6 +225,21 @@ def main() -> None:
     if st.button(t("runs.view_btn"), type="primary"):
         st.query_params["run_id"] = selected_run_id
         st.switch_page("pages/2_run_detail.py")
+
+    section(t("runs.compare_basket_section"))
+    previous_basket = st.session_state.get("compare_basket", [])
+    basket_default = [rid for rid in previous_basket if rid in select_options]
+    compare_basket = st.multiselect(
+        t("runs.compare_basket"),
+        options=select_options,
+        default=basket_default,
+        help=t("runs.compare_basket_hint"),
+    )
+    st.session_state["compare_basket"] = compare_basket
+    if st.button(t("runs.to_compare_btn"), type="secondary", disabled=len(compare_basket) < 2):
+        st.query_params.clear()
+        st.query_params["run_ids"] = ",".join(compare_basket)
+        st.switch_page("pages/3_compare_runs.py")
 
 
 if __name__ == "__main__":

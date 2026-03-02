@@ -35,3 +35,14 @@ def section(title: str, right: Any | None = None) -> None:
 def empty_state(text: str, hint: str | None = None) -> None:
     hint_html = f"<div style='margin-top:0.3rem;opacity:0.78'>{hint}</div>" if hint else ""
     st.markdown(f"<div class='ql-empty'><strong>{text}</strong>{hint_html}</div>", unsafe_allow_html=True)
+
+
+
+def info_card(title: str, value: str, hint: str | None = None) -> None:
+    hint_html = f"<div style='margin-top:0.2rem;opacity:0.72'>{hint}</div>" if hint else ""
+    st.markdown(
+        f"<div style='border:1px solid rgba(128,128,128,0.25);border-radius:10px;padding:0.7rem 0.9rem;margin:0.4rem 0 0.8rem 0'>"
+        f"<div style='font-size:0.86rem;opacity:0.76'>{title}</div>"
+        f"<div style='font-size:1.02rem;font-weight:600'>{value}</div>{hint_html}</div>",
+        unsafe_allow_html=True,
+    )
