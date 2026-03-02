@@ -142,6 +142,10 @@ class AkShareDataUpdater:
     def __init__(self, config_path: str):
         with open(config_path, "r", encoding="utf-8-sig") as f:
             self.config = yaml.safe_load(f)
+
+        # ETF data source fallback order and timeout settings
+        self.config.setdefault("etf_provider_order", ["em", "sina"])
+        self.config.setdefault("timeout_sec", 15)
         
         self.validator = DataValidator()
         self.updated_files = 0
@@ -153,43 +157,110 @@ class AkShareDataUpdater:
             self.config.get("logging", {}).get("level", "INFO"),
             self.config.get("logging", {}).get("file")
         )
+
+    def _to_sina_symbol(self, code: str) -> str:
+        """Convert ETF code to Sina symbol format."""
+        if code.startswith("5"):
+            return f"sh{code}"
+        if code.startswith("1"):
+            return f"sz{code}"
+
+        logger.warning(f"Unknown ETF code prefix for {code}, fallback to sh{code}")
+        return f"sh{code}"
+
+    def _normalize_bar_dataframe(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Normalize OHLCV schema for storage and downstream curation."""
+        if df.empty:
+            return df
+
+        required_cols = ["ts", "symbol", "open", "high", "low", "close", "volume"]
+        if any(col not in df.columns for col in required_cols):
+            missing = [col for col in required_cols if col not in df.columns]
+            logger.error(f"Cannot normalize {symbol}: missing columns {missing}")
+            return pd.DataFrame()
+
+        out = df.copy()
+        out["ts"] = pd.to_datetime(out["ts"])
+        for col in ["open", "high", "low", "close"]:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        out["volume"] = pd.to_numeric(out["volume"], errors="coerce").fillna(0).astype("int64")
+
+        if "amount" in out.columns:
+            out["amount"] = pd.to_numeric(out["amount"], errors="coerce").fillna(0.0)
+
+        out = out.dropna(subset=["ts", "open", "high", "low", "close"])
+        out = out.sort_values("ts").drop_duplicates(["symbol", "ts"])
+        out["ts"] = out["ts"].dt.strftime("%Y-%m-%d")
+
+        columns = required_cols + (["amount"] if "amount" in out.columns else [])
+        return out[columns]
+
+    def _fetch_etf_em(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+        """Fetch ETF history from Eastmoney provider."""
+        df = ak.fund_etf_hist_em(
+            symbol=symbol,
+            period="daily",
+            start_date=start_date.replace("-", ""),
+            end_date=end_date.replace("-", ""),
+            adjust=adjust,
+        )
+
+        if df.empty:
+            return pd.DataFrame()
+
+        df = df.rename(columns=AKSHARE_FIELD_MAP)
+        df["symbol"] = f"ETF:{symbol}"
+        return self._normalize_bar_dataframe(df, f"ETF:{symbol}")
+
+    def _fetch_etf_sina(self, code: str, start: str, end: str) -> pd.DataFrame:
+        """Fetch ETF history from Sina provider and normalize schema."""
+        sina_symbol = self._to_sina_symbol(code)
+        df = ak.fund_etf_hist_sina(symbol=sina_symbol)
+
+        if df.empty:
+            return pd.DataFrame()
+
+        df = df.rename(columns={"date": "ts"})
+        df["ts"] = pd.to_datetime(df["ts"])
+        for col in ["open", "high", "low", "close"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype("int64")
+        if "amount" in df.columns:
+            df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
+
+        df["symbol"] = f"ETF:{code}"
+
+        start_dt = pd.to_datetime(start)
+        end_dt = pd.to_datetime(end)
+        df = df[(df["ts"] >= start_dt) & (df["ts"] <= end_dt)]
+        df = df.sort_values("ts").drop_duplicates(["symbol", "ts"])
+
+        return self._normalize_bar_dataframe(df, f"ETF:{code}")
     
     def _fetch_etf(self, symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
-        """Fetch ETF historical data from AkShare."""
+        """Fetch ETF historical data with provider fallback."""
         logger.info(f"Fetching ETF {symbol} from {start_date} to {end_date}")
-        
-        try:
-            # AkShare ETF interface
-            df = ak.fund_etf_hist_em(
-                symbol=symbol,
-                period="daily",
-                start_date=start_date.replace("-", ""),
-                end_date=end_date.replace("-", ""),
-                adjust=adjust
-            )
-            
-            if df.empty:
-                logger.warning(f"No data returned for ETF {symbol}")
-                return pd.DataFrame()
-            
-            # Rename columns
-            df = df.rename(columns=AKSHARE_FIELD_MAP)
-            
-            # Normalize timestamp
-            df["ts"] = pd.to_datetime(df["ts"]).dt.strftime("%Y-%m-%d")
-            
-            # Add symbol with prefix
-            df["symbol"] = f"ETF:{symbol}"
-            
-            # Ensure amount column exists
-            if "amount" not in df.columns:
-                df["amount"] = 0.0
-            
-            return df[["ts", "symbol", "open", "high", "low", "close", "volume", "amount"]]
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch ETF {symbol}: {e}")
-            return pd.DataFrame()
+
+        providers = self.config.get("etf_provider_order", ["em", "sina"])
+        for provider in providers:
+            try:
+                if provider == "em":
+                    df = self._fetch_etf_em(symbol, start_date, end_date, adjust)
+                elif provider == "sina":
+                    df = self._fetch_etf_sina(symbol, start_date, end_date)
+                else:
+                    logger.warning(f"Unknown ETF provider '{provider}', skipping")
+                    continue
+
+                if not df.empty:
+                    logger.info(f"Fetched ETF {symbol} via {provider}, rows={len(df)}")
+                    return df
+
+                logger.warning(f"ETF {symbol} returned empty via {provider}")
+            except Exception as e:
+                logger.warning(f"Failed ETF {symbol} via {provider}: {e}")
+
+        return pd.DataFrame()
     
     def _fetch_index(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """Fetch Index historical data from AkShare."""
@@ -252,7 +323,12 @@ class AkShareDataUpdater:
     def _save_data(self, df: pd.DataFrame, filepath: Path):
         """Save data to CSV."""
         filepath.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(filepath, index=False)
+        df = self._normalize_bar_dataframe(df, filepath.stem)
+        if df.empty:
+            logger.warning(f"Skip saving empty normalized dataframe for {filepath}")
+            return
+
+        df.to_csv(filepath, index=False, encoding="utf-8")
         self.updated_files += 1
         logger.info(f"Saved {len(df)} rows to {filepath}")
     

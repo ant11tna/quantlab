@@ -1,6 +1,14 @@
 # Data Sources Configuration for AkShare
 # Defines ETF and Index symbols to fetch and update
 
+# ETF provider fallback order for scripts/update_data.py
+etf_provider_order:
+  - "em"
+  - "sina"
+
+# Generic timeout in seconds used by updater integrations
+timeout_sec: 15
+
 # ETF Configuration (Tradeable instruments)
 etf:
   enabled: true
