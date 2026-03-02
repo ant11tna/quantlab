@@ -5,12 +5,183 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+from copy import deepcopy
 from datetime import datetime
+from itertools import product
 from pathlib import Path
+from typing import Any, Dict, Iterable
 
 import yaml
 from loguru import logger
+
+
+def _iter_grid_combinations(grid_config: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+    """Yield cartesian product of config.grid."""
+    if not isinstance(grid_config, dict) or not grid_config:
+        yield {}
+        return
+
+    keys = []
+    values = []
+    for key, options in grid_config.items():
+        if isinstance(options, list) and options:
+            keys.append(key)
+            values.append(options)
+
+    if not keys:
+        yield {}
+        return
+
+    for combo in product(*values):
+        yield dict(zip(keys, combo))
+
+
+def _slug(value: Any) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "_", str(value).strip()).strip("_").lower()
+
+
+def _summarize_grid_params(grid_params: Dict[str, Any]) -> str:
+    if not grid_params:
+        return ""
+
+    tokens = []
+    for key, value in sorted(grid_params.items(), key=lambda item: item[0]):
+        if key == "momentum_window":
+            tokens.append(f"w{value}")
+        elif key == "rebalance":
+            tokens.append(_slug(value))
+        else:
+            tokens.append(f"{_slug(key)}{_slug(value)}")
+    return "_".join(tokens)
+
+
+def _map_rebalance(value: Any) -> str:
+    mapping = {
+        "monthly": "M",
+        "weekly": "W",
+        "quarterly": "Q",
+        "daily": "D",
+    }
+    return mapping.get(str(value).strip().lower(), "M")
+
+
+def _run_single_backtest(config: Dict[str, Any], config_path: Path, config_text: str, grid_params: Dict[str, Any]) -> Path:
+    """Run one backtest and return run directory."""
+    from quantlab.backtest.engine import BacktestEngine
+    from quantlab.core.runlog import (
+        create_run_dir,
+        write_run_metadata,
+        finalize_run,
+    )
+    from quantlab.data.sources.local_csv import MockDataSource
+    from quantlab.data.ingest import DataIngestor
+    from quantlab.research.strategies.base import EqualWeightStrategy
+
+    strategy_name = "momentum" if "momentum_window" in grid_params else "backtest"
+    run_name = strategy_name
+    grid_summary = _summarize_grid_params(grid_params)
+    if grid_summary:
+        run_name = f"{strategy_name}_{grid_summary}"
+
+    run_dir = create_run_dir(
+        base="runs",
+        name=run_name,
+        config_text=config_text,
+    )
+
+    write_run_metadata(
+        run_dir=run_dir,
+        config_path=config_path,
+        config_text=config_text,
+        data_manifest=None,
+        git_rev=None,
+        env_info=None,
+    )
+
+    symbols = ["SPY", "TLT", "GLD"]
+    data_source = MockDataSource(symbols=symbols)
+    ingestor = DataIngestor(data_source, "data/curated")
+
+    start = datetime(2020, 1, 1)
+    end = datetime(2024, 12, 31)
+    data = ingestor.ingest(symbols, start, end)
+
+    strategy = EqualWeightStrategy(symbols=symbols)
+    exec_config = config.get("default", {}).get("execution", {}) if config else {}
+    rebalance_freq = _map_rebalance(grid_params.get("rebalance", "monthly"))
+
+    engine = BacktestEngine(
+        strategy=strategy,
+        initial_cash=1_000_000.0,
+        fee_model="us_etfs",
+        exec_config=exec_config,
+    )
+
+    results = engine.run(
+        data=data,
+        rebalance_freq=rebalance_freq,
+        progress=True,
+    )
+
+    artifacts = {}
+    equity_path = run_dir / "equity_curve.parquet"
+    results["equity_curve"].to_parquet(equity_path, index=False)
+    artifacts["equity_curve"] = equity_path
+
+    weights_path = run_dir / "weights.parquet"
+    results["weights"].to_parquet(weights_path, index=False)
+    artifacts["weights"] = weights_path
+
+    if not results["trades"].empty:
+        fills_path = run_dir / "fills.parquet"
+        results["trades"].to_parquet(fills_path, index=False)
+        artifacts["fills"] = fills_path
+
+    positions_df = results.get("positions")
+    if positions_df is not None and not positions_df.empty:
+        positions_path = run_dir / "positions.parquet"
+        positions_df.to_parquet(positions_path, index=False)
+        artifacts["positions"] = positions_path
+
+    runtime_config = {
+        "symbols": symbols,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "initial_cash": 1_000_000.0,
+        "rebalance": rebalance_freq,
+        "fee": exec_config.get("fee_bps") if isinstance(exec_config, dict) else None,
+        "slippage": exec_config.get("slippage_bps") if isinstance(exec_config, dict) else None,
+        "strategy": strategy.__class__.__name__,
+        "strategy_params": {
+            "symbols": symbols,
+            **grid_params,
+        },
+    }
+
+    finalize_run(
+        run_dir=run_dir,
+        artifacts=artifacts,
+        metrics=results["metrics"],
+        runtime_config=runtime_config,
+    )
+
+    try:
+        from quantlab.db.persist import persist_run
+
+        persist_run(
+            run_id=run_dir.name,
+            run_dir=run_dir,
+            results=results,
+            config=config,
+            snapshot=None,
+        )
+        logger.info("Run persisted to DuckDB")
+    except Exception as e:
+        logger.warning(f"Failed to persist to DuckDB: {e}")
+
+    return run_dir
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -22,150 +193,31 @@ def setup_logging(verbose: bool = False) -> None:
 
 def cmd_backtest(args: argparse.Namespace) -> int:
     """Run backtest command with full run tracking."""
-    from quantlab.backtest.engine import BacktestEngine
-    from quantlab.core.runlog import (
-        create_run_dir,
-        write_run_metadata,
-        finalize_run,
-        load_run_metrics,
-    )
-    from quantlab.data.sources.local_csv import MockDataSource
-    from quantlab.data.ingest import DataIngestor
-    from quantlab.research.strategies.base import EqualWeightStrategy
-    
     logger.info(f"Running backtest with config: {args.config}")
     
     # Load config (keep original text for hash)
     config_path = Path(args.config)
     with open(config_path, 'r', encoding='utf-8') as f:
         config_text = f.read()
-    config = yaml.safe_load(config_text)
-    
-    # Create run directory with full metadata
-    run_dir = create_run_dir(
-        base="runs",
-        name="backtest",
-        config_text=config_text
-    )
-    
-    # Write metadata before running
-    write_run_metadata(
-        run_dir=run_dir,
-        config_path=config_path,
-        config_text=config_text,
-        data_manifest=None,  # Will be generated
-        git_rev=None,        # Will be auto-detected
-        env_info=None        # Will be auto-detected
-    )
-    
-    # Create mock data source for demo
-    symbols = ["SPY", "TLT", "GLD"]
-    data_source = MockDataSource(symbols=symbols)
-    
-    # Generate mock data
-    ingestor = DataIngestor(data_source, "data/curated")
-    
-    start = datetime(2020, 1, 1)
-    end = datetime(2024, 12, 31)
-    
-    data = ingestor.ingest(symbols, start, end)
-    
-    # Create strategy
-    strategy = EqualWeightStrategy(symbols=symbols)
-    
-    # Extract execution config from loaded config
-    exec_config = config.get("default", {}).get("execution", {}) if config else {}
-    
-    # Run backtest
-    engine = BacktestEngine(
-        strategy=strategy,
-        initial_cash=1_000_000.0,
-        fee_model="us_etfs",
-        exec_config=exec_config
-    )
-    
-    results = engine.run(
-        data=data,
-        rebalance_freq="M",
-        progress=True
-    )
-    
-    # Prepare artifacts for results/ subdirectory
-    artifacts = {}
-    
-    # Equity curve
-    equity_path = run_dir / "equity_curve.parquet"
-    results["equity_curve"].to_parquet(equity_path, index=False)
-    artifacts["equity_curve"] = equity_path
-    
-    # Weights
-    weights_path = run_dir / "weights.parquet"
-    results["weights"].to_parquet(weights_path, index=False)
-    artifacts["weights"] = weights_path
-    
-    # Fills/Trades
-    if not results["trades"].empty:
-        fills_path = run_dir / "fills.parquet"
-        results["trades"].to_parquet(fills_path, index=False)
-        artifacts["fills"] = fills_path
-    
-    # Positions (generate from equity curve)
-    positions_df = results.get("positions")
-    if positions_df is not None and not positions_df.empty:
-        positions_path = run_dir / "positions.parquet"
-        positions_df.to_parquet(positions_path, index=False)
-        artifacts["positions"] = positions_path
-    
-    runtime_config = {
-        "symbols": symbols,
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "initial_cash": 1_000_000.0,
-        "rebalance": "M",
-        "fee": exec_config.get("fee_bps") if isinstance(exec_config, dict) else None,
-        "slippage": exec_config.get("slippage_bps") if isinstance(exec_config, dict) else None,
-        "strategy": strategy.__class__.__name__,
-        "strategy_params": {
-            "symbols": symbols,
-        },
-    }
+    config = yaml.safe_load(config_text) or {}
 
-    # Finalize run with artifacts and metrics
-    finalize_run(
-        run_dir=run_dir,
-        artifacts=artifacts,
-        metrics=results["metrics"],
-        runtime_config=runtime_config,
-    )
-    
-    # Also persist to DuckDB for querying
-    try:
-        from quantlab.db.persist import persist_run
-        persist_run(
-            run_id=run_dir.name,
-            run_dir=run_dir,
-            results=results,
-            config=config,
-            snapshot=None,
+    run_params = [dict()]
+    if args.grid and isinstance(config.get("grid"), dict) and config.get("grid"):
+        run_params = list(_iter_grid_combinations(config.get("grid", {})))
+
+    for grid_params in run_params:
+        run_config = deepcopy(config)
+        if grid_params:
+            run_config.setdefault("grid_selection", {}).update(grid_params)
+
+        run_dir = _run_single_backtest(
+            config=run_config,
+            config_path=config_path,
+            config_text=config_text,
+            grid_params=grid_params,
         )
-        logger.info(f"Run persisted to DuckDB")
-    except Exception as e:
-        logger.warning(f"Failed to persist to DuckDB: {e}")
-    
-    # Print summary
-    metrics = results["metrics"]
-    summary = metrics.get("summary", {})
-    
-    print("\n" + "=" * 60)
-    print("BACKTEST RESULTS")
-    print("=" * 60)
-    print(f"Run ID: {run_dir.name}")
-    print(f"Total Return: {summary.get('total_return', 0):.2%}")
-    print(f"Sharpe Ratio: {summary.get('sharpe_ratio', 0):.2f}")
-    print(f"Max Drawdown: {summary.get('max_drawdown', 0):.2%}")
-    print(f"Total Trades: {metrics.get('trading', {}).get('total_trades', 0)}")
-    print(f"\nResults saved to: {run_dir}")
-    print("=" * 60)
+        print(f"Run ID: {run_dir.name}")
+        print(f"Results saved to: {run_dir}")
     
     return 0
 
@@ -331,6 +383,11 @@ def main() -> int:
         "--profile",
         default=None,
         help="Execution profile name (currently reserved, optional)"
+    )
+    backtest_parser.add_argument(
+        "--grid",
+        action="store_true",
+        help="Expand config.grid and run all parameter combinations",
     )
     backtest_parser.set_defaults(func=cmd_backtest)
     
