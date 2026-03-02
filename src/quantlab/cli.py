@@ -312,6 +312,11 @@ def main() -> int:
         default="config/backtest.yaml",
         help="Backtest configuration file"
     )
+    backtest_parser.add_argument(
+        "--profile",
+        default=None,
+        help="Execution profile name (currently reserved, optional)"
+    )
     backtest_parser.set_defaults(func=cmd_backtest)
     
     # Compare command

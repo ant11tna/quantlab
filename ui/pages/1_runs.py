@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from typing import Dict
 
 # 确保能 import i18n（指向 ui/ 目录）
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -200,44 +201,28 @@ def main():
         filtered_df = runs_df
         if search:
             mask = (
-                runs_df["name"].str.contains(search, case=False, na=False) |
+                runs_df["strategy"].str.contains(search, case=False, na=False) |
                 runs_df["run_id"].str.contains(search, case=False, na=False)
             )
             filtered_df = runs_df[mask]
         
         # 准备显示列
         display_df = filtered_df.copy()
-        display_df["started_at"] = display_df["started_at"].dt.strftime("%Y-%m-%d %H:%M")
-        
-        # 格式化指标
-        display_df["return"] = display_df["total_return"].apply(format_pct)
-        display_df["drawdown"] = display_df["max_drawdown"].apply(lambda x: format_pct(x) if x else "-")
-        display_df["sharpe"] = display_df["sharpe_ratio"].apply(lambda x: f"{x:.2f}" if x else "-")
-        display_df["fees"] = display_df["total_fees"].apply(lambda x: format_number(x, 2) if x else "-")
-        
-        # 状态标签
-        def status_badge(status):
-            labels = {
-                "complete": "🟢 " + t("status.complete"),
-                "incomplete": "🟡 " + t("status.incomplete"),
-                "error": "🔴 " + t("status.error")
-            }
-            return labels.get(status, f"⚪ {status}")
-        
-        display_df["status"] = display_df["status"].apply(status_badge)
-        
+        display_df["created_at"] = pd.to_datetime(display_df["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
+        display_df["total_return"] = display_df["total_return"].apply(format_pct)
+        display_df["max_drawdown"] = display_df["max_drawdown"].apply(format_pct)
+        display_df["sharpe"] = display_df["sharpe"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "-")
+
         # 显示表格
         st.dataframe(
-            display_df[["run_id", "started_at", "name", "status", "return", "drawdown", "sharpe", "fees"]],
+            display_df[["run_id", "strategy", "total_return", "max_drawdown", "sharpe", "created_at"]],
             column_config={
-                "run_id": t("runs.search").replace("🔍 ", "").replace("按名称或运行ID", "运行ID"),
-                "started_at": t("runs.search").replace("🔍 ", "").replace("按名称或运行ID", "启动时间"),
-                "name": t("runs.search").replace("🔍 ", "").replace("按名称或运行ID", "名称"),
-                "status": t("status.complete"),
-                "return": t("runs.total_return"),
-                "drawdown": t("runs.max_drawdown"),
-                "sharpe": t("runs.sharpe"),
-                "fees": t("runs.fees"),
+                "run_id": "run_id",
+                "strategy": "strategy",
+                "total_return": "total_return",
+                "max_drawdown": "max_drawdown",
+                "sharpe": "sharpe",
+                "created_at": "created_at",
             },
             hide_index=True,
             use_container_width=True,
@@ -248,7 +233,7 @@ def main():
         selected_run = st.selectbox(
             t("runs.select_for_detail"),
             options=filtered_df["run_id"].tolist(),
-            format_func=lambda x: f"{x} ({filtered_df[filtered_df['run_id']==x]['name'].iloc[0]})"
+            format_func=lambda x: f"{x} ({filtered_df[filtered_df['run_id']==x]['strategy'].iloc[0]})"
         )
     
     with col_right:
@@ -285,7 +270,7 @@ def main():
                     {status_labels.get(row['status'], row['status']).upper()}
                 </div>
                 <div style="font-size: 12px; color: #666; margin-top: 4px;">
-                    {row['started_at'].strftime('%Y-%m-%d %H:%M:%S')}
+                    {row['created_at'].strftime('%Y-%m-%d %H:%M:%S')}
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -310,7 +295,7 @@ def main():
             
             c3, c4 = st.columns(2)
             with c3:
-                sharpe = row["sharpe_ratio"]
+                sharpe = row["sharpe"]
                 render_metric_card(
                     t("runs.sharpe"), 
                     f"{sharpe:.2f}" if sharpe else "-"
