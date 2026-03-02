@@ -11,12 +11,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import streamlit as st
 from i18n import t
+from style import apply_global_style
 
 st.set_page_config(
     page_title=t("app.title"),
     page_icon="🧪",
     layout="wide",
 )
+apply_global_style()
 
 st.title(t("app.title"))
 st.markdown(t("app.subtitle"))
@@ -27,7 +29,7 @@ st.sidebar.title(t("app.nav"))
 pages = {
     "runs": t("app.runs"),
     "detail": t("app.run_detail"),
-    "compare": "Compare Runs",
+    "compare": t("app.compare_runs"),
     "settings": t("app.settings"),
 }
 
