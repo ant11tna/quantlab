@@ -101,6 +101,15 @@ class ExecutionConfig:
     impact_k_bps: Decimal = Decimal("20")  # Impact cost coefficient (bps)
     impact_alpha: Decimal = Decimal("0.5")  # Impact curve exponent (0.5 = sqrt)
     enforce_t1: bool = False  # T+1 settlement enforcement (A-shares)
+    min_lot: Optional[Decimal] = None  # Legacy alias for lot_size
+
+    def __post_init__(self) -> None:
+        """Normalize legacy aliases after dataclass initialization."""
+        if self.min_lot is not None:
+            # Keep backward compatibility with old caller code/tests.
+            self.lot_size = self.min_lot
+            if self.min_trade_qty == Decimal("1"):
+                self.min_trade_qty = self.min_lot
     
     @classmethod
     def from_dict(cls, config: Optional[Dict] = None) -> "ExecutionConfig":
@@ -221,7 +230,7 @@ class SimulatedBroker:
     def process_orders(
         self,
         ts: datetime,
-        bars: Dict[str, tuple[Bar, pd.Series]]
+        bars: Dict[str, Bar | tuple[Bar, pd.Series]]
     ) -> List[Fill]:
         """Process pending orders against market data.
         
@@ -229,14 +238,21 @@ class SimulatedBroker:
         
         Args:
             ts: Current timestamp
-            bars: Dict of symbol -> (Bar, full_row_series)
+            bars: Dict of symbol -> Bar OR (Bar, full_row_series)
                   The full_row_series contains curated regime fields
             
         Returns:
             List of fills from this bar
         """
-        # Extract just Bar objects for price updates
-        bar_only = {s: bar for s, (bar, _) in bars.items()}
+        # Normalize input format and extract Bar objects for price updates
+        normalized_bars: Dict[str, tuple[Bar, Optional[pd.Series]]] = {}
+        for symbol, payload in bars.items():
+            if isinstance(payload, tuple):
+                normalized_bars[symbol] = payload
+            else:
+                normalized_bars[symbol] = (payload, None)
+
+        bar_only = {s: bar for s, (bar, _) in normalized_bars.items()}
         
         # Update prices for MTM
         self.update_prices(bar_only)
@@ -248,10 +264,10 @@ class SimulatedBroker:
             if order.status not in (OrderStatus.SUBMITTED, OrderStatus.PARTIAL_FILLED):
                 continue
             
-            if order.symbol not in bars:
+            if order.symbol not in normalized_bars:
                 continue
             
-            bar, bar_row = bars[order.symbol]
+            bar, bar_row = normalized_bars[order.symbol]
             fill = self._try_fill(order, ts, bar, bar_row)
             
             if fill and fill.qty > 0:
@@ -431,6 +447,35 @@ class SimulatedBroker:
         
         impact_cost = fill_qty * base_price * impact_bps_decimal / Decimal("10000")
         fee = self.fee_config.calculate_commission(fill_qty, fill_price)
+
+        # Final BUY cash guard after impact-adjusted price and final commission.
+        if order.side == Side.BUY:
+            total_cost = fill_qty * fill_price + fee
+            if total_cost > self.cash and fill_price > 0:
+                commission_rate = self.fee_config.commission_rate
+                effective_price = fill_price * (Decimal("1") + commission_rate)
+                max_affordable = self.cash / effective_price
+                lot_size = self.exec_config.lot_size
+                if lot_size > 1:
+                    max_affordable = (max_affordable // lot_size) * lot_size
+                fill_qty = min(fill_qty, max_affordable)
+
+                if fill_qty <= 0:
+                    order.reject_reason = "INSUFFICIENT_CASH"
+                    return None
+
+                # Recompute impact + fee with adjusted quantity.
+                participation = fill_qty / bar.volume
+                impact_bps = float(k_bps) * (float(participation) ** alpha_float)
+                impact_bps_decimal = Decimal(str(impact_bps))
+                fill_price = base_price * (
+                    Decimal("1")
+                    + self.fee_config.spread_bps / Decimal("10000")
+                    + self.fee_config.slippage_bps / Decimal("10000")
+                )
+                fill_price = fill_price * (Decimal("1") + impact_bps_decimal / Decimal("10000"))
+                impact_cost = fill_qty * base_price * impact_bps_decimal / Decimal("10000")
+                fee = self.fee_config.calculate_commission(fill_qty, fill_price)
         
         # Calculate filled ratio
         filled_ratio = fill_qty / order.qty

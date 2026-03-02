@@ -144,6 +144,7 @@ class AkShareDataUpdater:
             self.config = yaml.safe_load(f)
         
         self.validator = DataValidator()
+        self.updated_files = 0
         self.manifest = ManifestManager(
             self.config.get("manifest", {}).get("dir", "data/manifest")
         )
@@ -252,6 +253,7 @@ class AkShareDataUpdater:
         """Save data to CSV."""
         filepath.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(filepath, index=False)
+        self.updated_files += 1
         logger.info(f"Saved {len(df)} rows to {filepath}")
     
     def update_etf(self, force: bool = False):
@@ -373,11 +375,27 @@ class AkShareDataUpdater:
     def update_all(self, force: bool = False):
         """Update all configured data."""
         logger.info("Starting data update...")
-        
+
         self.update_etf(force=force)
         self.update_index(force=force)
-        
+
         logger.info("Data update completed!")
+
+    def _has_any_raw_data(self, data_type: str = "all") -> bool:
+        """Check if local raw CSV data already exists."""
+        sources = self.config.get("sources", {})
+
+        if data_type in ("etf", "all"):
+            etf_dir = Path(sources.get("etf", {}).get("out_dir", "data/raw/bars/etf"))
+            if list(etf_dir.glob("*.csv")):
+                return True
+
+        if data_type in ("index", "all"):
+            index_dir = Path(sources.get("index", {}).get("out_dir", "data/raw/bars/index"))
+            if list(index_dir.glob("*.csv")):
+                return True
+
+        return False
 
 
 def main():
@@ -422,7 +440,12 @@ def main():
             updater.update_etf(force=args.force)
         if args.type in ("index", "all"):
             updater.update_index(force=args.force)
-    
+
+    # Fail only when nothing was updated and no local data exists at all.
+    if updater.updated_files == 0 and not updater._has_any_raw_data(args.type):
+        logger.error("No data updated and no local raw CSV found. Check network/proxy or data source config.")
+        return 2
+
     return 0
 
 
