@@ -57,6 +57,111 @@ def _get_git_rev() -> str:
         return "N/A"
 
 
+def _get_git_commit() -> Optional[str]:
+    """Get current short git commit hash for metrics metadata."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        git_commit = result.stdout.strip()
+        return git_commit or None
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def _to_decimal(value: Any) -> Optional[float]:
+    """Convert numeric-like values to decimal float for JSON output."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_metrics_v1(
+    metrics_payload: Dict[str, Any],
+    runtime_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Normalize metrics payload to standard structure v1.0 while keeping legacy keys."""
+    summary = metrics_payload.get("summary", {}) if isinstance(metrics_payload.get("summary"), dict) else {}
+    risk = metrics_payload.get("risk", {}) if isinstance(metrics_payload.get("risk"), dict) else {}
+    trading = metrics_payload.get("trading", {}) if isinstance(metrics_payload.get("trading"), dict) else {}
+    benchmark = metrics_payload.get("benchmark", {}) if isinstance(metrics_payload.get("benchmark"), dict) else {}
+
+    config_source: Dict[str, Any] = runtime_config if isinstance(runtime_config, dict) else {}
+    strategy_value = config_source.get("strategy")
+    strategy_name = strategy_value.get("name") if isinstance(strategy_value, dict) else strategy_value
+
+    config_payload = {
+        "symbols": config_source.get("symbols"),
+        "start": config_source.get("start"),
+        "end": config_source.get("end"),
+        "initial_cash": _to_decimal(config_source.get("initial_cash")),
+        "rebalance": config_source.get("rebalance"),
+        "fee": _to_decimal(config_source.get("fee")),
+        "slippage": _to_decimal(config_source.get("slippage")),
+        "strategy": strategy_name,
+        "strategy_params": config_source.get("strategy_params"),
+    }
+
+    normalized = {
+        "meta": {
+            "schema_version": "1.0",
+            "created_at": datetime.now().isoformat(),
+            "git_commit": _get_git_commit(),
+        },
+        "config": config_payload,
+        "performance": {
+            "total_return": _to_decimal(summary.get("total_return")),
+            "annualized_return": _to_decimal(summary.get("annualized_return")),
+            "volatility": _to_decimal(summary.get("volatility")),
+            "sharpe_ratio": _to_decimal(summary.get("sharpe_ratio", summary.get("sharpe"))),
+            "max_drawdown": _to_decimal(summary.get("max_drawdown")),
+            "calmar_ratio": _to_decimal(summary.get("calmar_ratio")),
+        },
+        "risk": {
+            "var_95": _to_decimal(risk.get("var_95")),
+            "cvar_95": _to_decimal(risk.get("cvar_95")),
+            "beta": _to_decimal(risk.get("beta")),
+            "alpha": _to_decimal(risk.get("alpha")),
+            "skewness": _to_decimal(risk.get("skewness")),
+            "kurtosis": _to_decimal(risk.get("kurtosis")),
+            "max_drawdown": _to_decimal(risk.get("max_drawdown", summary.get("max_drawdown"))),
+            "annualized_volatility": _to_decimal(risk.get("annualized_volatility", summary.get("volatility"))),
+        },
+        "trade": {
+            "total_trades": trading.get("total_trades"),
+            "buy_trades": trading.get("buy_trades"),
+            "sell_trades": trading.get("sell_trades"),
+            "total_volume": _to_decimal(trading.get("total_volume")),
+            "avg_trade_size": _to_decimal(trading.get("avg_trade_size")),
+            "total_fees": _to_decimal(trading.get("total_fees")),
+            "total_impact_cost": _to_decimal(trading.get("total_impact_cost")),
+            "impact_cost_ratio": _to_decimal(trading.get("impact_cost_ratio")),
+            "turnover": _to_decimal(trading.get("turnover")),
+            "avg_impact_bps": _to_decimal(trading.get("avg_impact_bps")),
+        },
+        "benchmark": {
+            "total_return": _to_decimal(benchmark.get("total_return")),
+            "annualized_return": _to_decimal(benchmark.get("annualized_return")),
+            "volatility": _to_decimal(benchmark.get("volatility")),
+            "max_drawdown": _to_decimal(benchmark.get("max_drawdown")),
+            "tracking_error": _to_decimal(benchmark.get("tracking_error")),
+            "information_ratio": _to_decimal(benchmark.get("information_ratio")),
+        },
+    }
+
+    for key, value in metrics_payload.items():
+        if key not in normalized:
+            normalized[key] = value
+
+    return normalized
+
+
 def _get_env_info() -> Dict[str, str]:
     """Get environment information."""
     info = {
@@ -262,7 +367,8 @@ def write_run_metadata(
 def finalize_run(
     run_dir: Path,
     artifacts: Dict[str, Path],
-    metrics: Optional[Dict[str, Any]] = None
+    metrics: Optional[Dict[str, Any]] = None,
+    runtime_config: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Finalize run by writing artifacts and metrics.
     
@@ -270,6 +376,7 @@ def finalize_run(
         run_dir: Run directory path
         artifacts: Dict of artifact name -> file path
         metrics: Optional metrics dict to write as metrics.json
+        runtime_config: Optional actual runtime config to persist in metrics.json
     """
     results_dir = run_dir / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -290,13 +397,11 @@ def finalize_run(
     
     # Write metrics.json
     if metrics:
-        metrics_payload = _to_jsonable(metrics)
-        summary = metrics_payload.get("summary", {}) if isinstance(metrics_payload, dict) else {}
-        if isinstance(summary, dict):
-            metrics_payload.setdefault("total_return", summary.get("total_return"))
-            metrics_payload.setdefault("max_drawdown", summary.get("max_drawdown"))
-            sharpe = summary.get("sharpe", summary.get("sharpe_ratio"))
-            metrics_payload.setdefault("sharpe", sharpe)
+        raw_payload = _to_jsonable(metrics)
+        metrics_payload = _build_metrics_v1(
+            raw_payload if isinstance(raw_payload, dict) else {},
+            runtime_config=runtime_config,
+        )
 
         metrics_path = results_dir / "metrics.json"
         with open(metrics_path, 'w', encoding="utf-8") as f:

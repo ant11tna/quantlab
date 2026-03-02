@@ -116,11 +116,26 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         positions_df.to_parquet(positions_path, index=False)
         artifacts["positions"] = positions_path
     
+    runtime_config = {
+        "symbols": symbols,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "initial_cash": 1_000_000.0,
+        "rebalance": "M",
+        "fee": exec_config.get("fee_bps") if isinstance(exec_config, dict) else None,
+        "slippage": exec_config.get("slippage_bps") if isinstance(exec_config, dict) else None,
+        "strategy": strategy.__class__.__name__,
+        "strategy_params": {
+            "symbols": symbols,
+        },
+    }
+
     # Finalize run with artifacts and metrics
     finalize_run(
         run_dir=run_dir,
         artifacts=artifacts,
-        metrics=results["metrics"]
+        metrics=results["metrics"],
+        runtime_config=runtime_config,
     )
     
     # Also persist to DuckDB for querying
