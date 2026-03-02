@@ -1,7 +1,4 @@
-"""主入口 - QuantLab 量化研究平台
-
-默认跳转到回测列表页
-"""
+"""主入口 - QuantLab 量化研究平台"""
 
 from pathlib import Path
 import sys
@@ -27,6 +24,11 @@ st.markdown(t("app.subtitle"))
 st.sidebar.title(t("app.nav"))
 
 with st.sidebar:
+    st.page_link("app.py", label=t("app.home"), icon="🏠")
+    st.page_link("pages/1_runs.py", label=t("app.runs"), icon="📊")
+    st.page_link("pages/2_run_detail.py", label=t("app.run_detail"), icon="🔍")
+    st.page_link("pages/3_compare_runs.py", label=t("app.compare_runs"), icon="📈")
+
     st.markdown("---")
     st.subheader(t("app.update_all.section"))
     force_update_all = st.checkbox(t("app.update_all.force"), value=False)
@@ -51,25 +53,4 @@ with st.sidebar:
 
         st.rerun()
 
-# 使用内部 key 做判断，显示文本用 format_func 翻译
-pages = {
-    "runs": t("app.runs"),
-    "detail": t("app.run_detail"),
-    "compare": t("app.compare_runs"),
-    "settings": t("app.settings"),
-}
-
-choice = st.sidebar.radio(
-    t("app.goto"),
-    options=list(pages.keys()),
-    format_func=lambda k: pages[k]
-)
-
-if choice == "runs":
-    st.switch_page("pages/1_runs.py")
-elif choice == "detail":
-    st.switch_page("pages/2_run_detail.py")
-elif choice == "compare":
-    st.switch_page("pages/3_compare_runs.py")
-else:
-    st.info(t("app.settings_soon"))
+st.info(t("app.home"))
