@@ -6,11 +6,9 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
-import sys
 from typing import Any
 
-# 确保能 import ui 下模块
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import ui.bootstrap  # noqa: F401
 
 import pandas as pd
 import streamlit as st

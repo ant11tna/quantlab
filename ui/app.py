@@ -1,10 +1,6 @@
 """主入口 - QuantLab 量化研究平台"""
 
-from pathlib import Path
-import sys
-
-# 确保能 import i18n
-sys.path.insert(0, str(Path(__file__).parent))
+import ui.bootstrap  # noqa: F401
 
 import streamlit as st
 from i18n import t
