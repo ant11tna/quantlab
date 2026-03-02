@@ -79,3 +79,36 @@ dmypy.json
 
 # ruff
 .ruff_cache/
+
+##################################################
+# Additional protections for quant research
+##################################################
+
+# Local secrets
+secrets.*
+*token*
+*.pem
+*.key
+.streamlit/secrets.toml
+
+# Temporary / cache
+cache/
+tmp/
+temp/
+
+# Additional databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Model artifacts
+*.pkl
+*.joblib
+*.pt
+*.pth
+*.onnx
+
+# Node (future frontend expansion)
+node_modules/
+dist/
+build/
