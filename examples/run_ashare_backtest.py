@@ -32,7 +32,28 @@ class ChinaETFStrategy(Strategy):
     def __init__(self, symbols: list[str]):
         self.symbols = symbols
         self.name = "ChinaETF_EqualWeight"
-    
+
+    def generate_targets(
+        self,
+        data: pd.DataFrame,
+        current_time: datetime,
+        current_weights: dict[str, float] | None = None,
+    ) -> list[TargetWeight]:
+        """生成等权目标权重。"""
+        if not self.symbols:
+            return []
+
+        weight = 1.0 / len(self.symbols)
+        return [
+            TargetWeight(
+                ts=current_time,
+                symbol=symbol,
+                target_weight=weight,
+                source=self.name,
+            )
+            for symbol in self.symbols
+        ]
+
     def on_rebalance(self, data: pd.DataFrame, ts: datetime) -> list[TargetWeight]:
         """每月再平衡为等权"""
         # 过滤当前有数据的标的
