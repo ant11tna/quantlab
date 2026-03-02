@@ -6,6 +6,7 @@ ZH = {
     "app.subtitle": "量化研究平台",
     "app.nav": "导航",
     "app.goto": "页面跳转",
+    "app.home": "🏠 首页",
     "app.runs": "📊 回测列表",
     "app.run_detail": "🔍 回测详情",
     "app.chart_demo": "📈 图表演示",
