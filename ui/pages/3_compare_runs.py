@@ -10,12 +10,14 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from components import empty_state, page_header, section
+from i18n import t
 from quantlab.assets import group_weights_by_asset_class, load_assets_map
 
-
-st.set_page_config(page_title="Compare Runs", page_icon="📈", layout="wide")
+st.set_page_config(page_title=t("compare.title"), page_icon="📈", layout="wide")
 
 RUNS_DIR = Path("runs")
 ASSETS_PATH = Path("data/assets.yaml")
@@ -31,29 +33,24 @@ def _safe_read_json(path: Path) -> dict[str, Any]:
 
 
 def _metric_value(metrics: dict[str, Any], *keys: str) -> Any:
-    """兼容 metrics 新旧结构，按优先级读取指标。"""
-    sections: list[dict[str, Any]] = [
+    sections = [
         metrics,
         metrics.get("performance", {}) if isinstance(metrics.get("performance"), dict) else {},
         metrics.get("risk", {}) if isinstance(metrics.get("risk"), dict) else {},
         metrics.get("trade", {}) if isinstance(metrics.get("trade"), dict) else {},
         metrics.get("summary", {}) if isinstance(metrics.get("summary"), dict) else {},
-        metrics.get("trading", {}) if isinstance(metrics.get("trading"), dict) else {},
     ]
-
     for key in keys:
-        for section in sections:
-            if key in section:
-                return section.get(key)
+        for sec in sections:
+            if key in sec:
+                return sec.get(key)
     return None
 
 
 def _safe_float(value: Any) -> float:
     try:
-        if value is None:
-            return float("nan")
-        return float(value)
-    except (TypeError, ValueError):
+        return float(value) if value is not None else float("nan")
+    except Exception:
         return float("nan")
 
 
@@ -62,34 +59,23 @@ def _load_equity_curve(path: Path) -> pd.DataFrame:
         df = pd.read_parquet(path)
     except Exception:
         return pd.DataFrame()
-
     if df.empty:
         return pd.DataFrame()
-
-    out = df.copy()
-    if "ts" not in out.columns:
-        if "date" in out.columns:
-            out = out.rename(columns={"date": "ts"})
-        elif "time" in out.columns:
-            out = out.rename(columns={"time": "ts"})
-
-    if "nav" not in out.columns:
-        for candidate in ("equity", "portfolio_value", "value"):
-            if candidate in out.columns:
-                out = out.rename(columns={candidate: "nav"})
+    if "ts" not in df.columns:
+        if "date" in df.columns:
+            df = df.rename(columns={"date": "ts"})
+        elif "time" in df.columns:
+            df = df.rename(columns={"time": "ts"})
+    if "nav" not in df.columns:
+        for c in ("equity", "portfolio_value", "value"):
+            if c in df.columns:
+                df = df.rename(columns={c: "nav"})
                 break
-
-    if not {"ts", "nav"}.issubset(out.columns):
+    if not {"ts", "nav"}.issubset(df.columns):
         return pd.DataFrame()
-
-    out["ts"] = pd.to_datetime(out["ts"], errors="coerce")
-    out["nav"] = pd.to_numeric(out["nav"], errors="coerce")
-    out = out.dropna(subset=["ts", "nav"]).sort_values("ts")
-
-    if out.empty:
-        return pd.DataFrame()
-
-    return out[["ts", "nav"]]
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+    df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+    return df.dropna(subset=["ts", "nav"]).sort_values("ts")[["ts", "nav"]]
 
 
 @st.cache_data(show_spinner=False)
@@ -98,216 +84,167 @@ def scan_runs(runs_dir: str = "runs") -> pd.DataFrame:
     columns = ["run_id", "metrics_path", "equity_path", "weights_path"]
     if not base.exists():
         return pd.DataFrame(columns=columns)
-
     rows: list[dict[str, str]] = []
     for run_dir in sorted([p for p in base.iterdir() if p.is_dir()], key=lambda p: p.name, reverse=True):
         metrics_path = run_dir / "results" / "metrics.json"
-        if not metrics_path.exists():
-            continue
-        rows.append(
-            {
+        if metrics_path.exists():
+            rows.append({
                 "run_id": run_dir.name,
                 "metrics_path": str(metrics_path),
                 "equity_path": str(run_dir / "results" / "equity_curve.parquet"),
                 "weights_path": str(run_dir / "results" / "weights.parquet"),
-            }
-        )
-
+            })
     return pd.DataFrame(rows, columns=columns)
 
 
 def _build_compare_metrics(selected_runs: list[str], run_index_df: pd.DataFrame) -> pd.DataFrame:
-    rows: list[dict[str, Any]] = []
+    rows = []
     for run_id in selected_runs:
         item = run_index_df[run_index_df["run_id"] == run_id]
         if item.empty:
             continue
-
-        metrics_path = Path(item.iloc[0]["metrics_path"])
-        metrics = _safe_read_json(metrics_path)
-
-        rows.append(
-            {
-                "run_id": run_id,
-                "total_return": _safe_float(_metric_value(metrics, "total_return", "return_total")),
-                "cagr": _safe_float(_metric_value(metrics, "cagr", "annualized_return", "annual_return")),
-                "sharpe": _safe_float(_metric_value(metrics, "sharpe", "sharpe_ratio")),
-                "max_drawdown": _safe_float(_metric_value(metrics, "max_drawdown", "drawdown_max")),
-                "annual_vol": _safe_float(_metric_value(metrics, "annual_vol", "volatility", "annualized_volatility")),
-            }
-        )
-
+        metrics = _safe_read_json(Path(item.iloc[0]["metrics_path"]))
+        cagr = _safe_float(_metric_value(metrics, "cagr", "annualized_return", "annual_return"))
+        max_dd = _safe_float(_metric_value(metrics, "max_drawdown", "drawdown_max"))
+        calmar = cagr / abs(max_dd) if pd.notna(cagr) and pd.notna(max_dd) and max_dd != 0 else float("nan")
+        rows.append({
+            "run_id": run_id,
+            "total_return": _safe_float(_metric_value(metrics, "total_return", "return_total")),
+            "cagr": cagr,
+            "vol": _safe_float(_metric_value(metrics, "annual_vol", "volatility", "annualized_volatility", "vol")),
+            "sharpe": _safe_float(_metric_value(metrics, "sharpe", "sharpe_ratio")),
+            "max_drawdown": max_dd,
+            "calmar": calmar,
+        })
     return pd.DataFrame(rows)
 
 
 def _build_nav_compare(selected_runs: list[str], run_index_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    merged: pd.DataFrame | None = None
+    merged = None
     warnings: list[str] = []
-
     for run_id in selected_runs:
         item = run_index_df[run_index_df["run_id"] == run_id]
         if item.empty:
-            warnings.append(f"{run_id}: run 索引不存在")
+            warnings.append(f"{run_id}: missing run")
             continue
-
-        equity_path = Path(item.iloc[0]["equity_path"])
-        if not equity_path.exists():
-            warnings.append(f"{run_id}: 缺少 equity_curve.parquet")
-            continue
-
-        eq = _load_equity_curve(equity_path)
+        eq = _load_equity_curve(Path(item.iloc[0]["equity_path"]))
         if eq.empty:
-            warnings.append(f"{run_id}: equity_curve 为空或字段不完整")
+            warnings.append(f"{run_id}: {t('compare.no_nav_for_run')}")
             continue
-
         base = eq["nav"].iloc[0]
         if pd.isna(base) or base == 0:
-            warnings.append(f"{run_id}: 初始 NAV 不可用，跳过")
+            warnings.append(f"{run_id}: {t('compare.invalid_base_nav')}")
             continue
-
-        series_df = eq.assign(**{run_id: eq["nav"] / base})[["ts", run_id]]
-        if merged is None:
-            merged = series_df
-        else:
-            merged = pd.merge(merged, series_df, on="ts", how="inner")
-
+        s = eq.assign(**{run_id: eq["nav"] / base})[["ts", run_id]]
+        merged = s if merged is None else pd.merge(merged, s, on="ts", how="inner")
     if merged is None or merged.empty:
         return pd.DataFrame(), warnings
-
-    merged = merged.sort_values("ts").set_index("ts")
-    return merged, warnings
+    return merged.sort_values("ts").set_index("ts"), warnings
 
 
 def _drawdown_df(nav_df: pd.DataFrame) -> pd.DataFrame:
-    drawdowns: dict[str, pd.Series] = {}
+    out = {}
     for col in nav_df.columns:
         s = pd.to_numeric(nav_df[col], errors="coerce")
-        dd = s / s.cummax() - 1
-        drawdowns[col] = dd
-    return pd.DataFrame(drawdowns, index=nav_df.index)
+        out[col] = s / s.cummax() - 1
+    return pd.DataFrame(out, index=nav_df.index)
 
 
-def _build_asset_class_compare(selected_runs: list[str], run_index_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+def _build_asset_compare(selected_runs: list[str], run_index_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     warnings: list[str] = []
     if not ASSETS_PATH.exists():
-        warnings.append("未配置资产元数据（data/assets.yaml）")
-        return pd.DataFrame(), warnings
-
+        return pd.DataFrame(), [t("compare.no_assets_meta")]
     assets_map = load_assets_map(str(ASSETS_PATH))
     if not assets_map:
-        warnings.append("未配置资产元数据（data/assets.yaml）")
-        return pd.DataFrame(), warnings
-
-    rows: list[dict[str, Any]] = []
+        return pd.DataFrame(), [t("compare.no_assets_meta")]
+    rows = []
     for run_id in selected_runs:
         item = run_index_df[run_index_df["run_id"] == run_id]
         if item.empty:
             continue
-
-        weights_path = Path(item.iloc[0]["weights_path"])
-        if not weights_path.exists():
-            warnings.append(f"{run_id}: 缺少 weights.parquet，跳过资产类别对比")
+        wp = Path(item.iloc[0]["weights_path"])
+        if not wp.exists():
+            warnings.append(f"{run_id}: {t('compare.no_weights_for_run')}")
             continue
-
         try:
-            weights_df = pd.read_parquet(weights_path)
-        except Exception as e:
-            warnings.append(f"{run_id}: 读取 weights.parquet 失败（{e}）")
+            grouped = group_weights_by_asset_class(pd.read_parquet(wp), assets_map)
+        except Exception:
+            warnings.append(f"{run_id}: {t('compare.no_weights_for_run')}")
             continue
-
-        grouped = group_weights_by_asset_class(weights_df, assets_map)
         if grouped.empty or "ts" not in grouped.columns:
-            warnings.append(f"{run_id}: 权重数据不可用于资产类别汇总")
+            warnings.append(f"{run_id}: {t('compare.no_weights_for_run')}")
             continue
-
-        grouped = grouped.sort_values("ts")
-        last_row = grouped.iloc[-1]
-        row: dict[str, Any] = {"run_id": run_id}
-        for col in grouped.columns:
-            if col == "ts":
-                continue
-            row[col] = _safe_float(last_row[col])
+        last = grouped.sort_values("ts").iloc[-1]
+        row = {"run_id": run_id}
+        for c in grouped.columns:
+            if c != "ts":
+                row[c] = _safe_float(last[c])
         rows.append(row)
-
     if not rows:
         return pd.DataFrame(), warnings
-
-    out = pd.DataFrame(rows).fillna(0.0)
-    class_cols = sorted([c for c in out.columns if c != "run_id"])
-    return out[["run_id", *class_cols]], warnings
+    df = pd.DataFrame(rows).fillna(0.0)
+    cols = ["run_id"] + sorted([c for c in df.columns if c != "run_id"])
+    return df[cols], warnings
 
 
 def main() -> None:
-    st.title("📈 多实验对比")
-
+    page_header(t("compare.title"), t("compare.subtitle"))
     runs_df = scan_runs(str(RUNS_DIR))
     if runs_df.empty:
-        st.info("runs 目录下暂无可对比实验（缺少 results/metrics.json）。")
+        empty_state(t("compare.empty"))
         return
 
     options = runs_df["run_id"].tolist()
-    selected_runs = st.multiselect("选择 run_id（可多选）", options=options, default=options[:2])
-
+    selected_runs = st.multiselect(t("compare.select_runs"), options=options, default=options[:2])
     if len(selected_runs) < 2:
-        st.warning("请至少选择 2 个 run 才能进行对比。")
+        st.warning(t("compare.need_two"))
         return
 
-    st.subheader("指标对比")
-    compare_df = _build_compare_metrics(selected_runs, runs_df)
-    sort_col = st.selectbox("排序字段", ["total_return", "cagr", "sharpe", "max_drawdown", "annual_vol"], index=0)
-    sort_asc = st.toggle("升序", value=False)
+    nav_df, nav_warnings = _build_nav_compare(selected_runs, runs_df)
+    for msg in nav_warnings:
+        st.warning(msg)
+    if nav_df.empty or nav_df.shape[1] < 2:
+        empty_state(t("compare.no_overlap"))
+        return
 
-    if not compare_df.empty:
-        compare_df = compare_df.sort_values(by=sort_col, ascending=sort_asc, na_position="last")
-        display_df = compare_df.copy()
-        display_df["total_return"] = display_df["total_return"] * 100
-        display_df["cagr"] = display_df["cagr"] * 100
-        display_df["max_drawdown"] = display_df["max_drawdown"] * 100
-        display_df["annual_vol"] = display_df["annual_vol"] * 100
+    st.caption(t("compare.intersection", start=nav_df.index.min().date(), end=nav_df.index.max().date(), points=len(nav_df)))
 
+    section(t("compare.metrics_section"))
+    metrics_df = _build_compare_metrics(selected_runs, runs_df)
+    if metrics_df.empty:
+        empty_state(t("compare.no_metrics"))
+    else:
+        disp = metrics_df.copy()
+        for c in ["total_return", "cagr", "vol", "max_drawdown"]:
+            disp[c] = pd.to_numeric(disp[c], errors="coerce") * 100
         st.dataframe(
-            display_df,
+            disp,
             use_container_width=True,
             hide_index=True,
             column_config={
                 "total_return": st.column_config.NumberColumn("total_return", format="%.2f%%"),
                 "cagr": st.column_config.NumberColumn("cagr", format="%.2f%%"),
+                "vol": st.column_config.NumberColumn("vol", format="%.2f%%"),
                 "sharpe": st.column_config.NumberColumn("sharpe", format="%.3f"),
                 "max_drawdown": st.column_config.NumberColumn("max_drawdown", format="%.2f%%"),
-                "annual_vol": st.column_config.NumberColumn("annual_vol", format="%.2f%%"),
+                "calmar": st.column_config.NumberColumn("calmar", format="%.3f"),
             },
         )
-    else:
-        st.info("未读取到可展示的指标。")
 
-    show_asset_class = st.toggle("显示期末资产类别占比对比", value=False)
-    if show_asset_class:
-        st.subheader("期末资产类别占比对比")
-        class_df, class_warnings = _build_asset_class_compare(selected_runs, runs_df)
-        for msg in class_warnings:
-            st.warning(msg)
-
-        if class_df.empty:
-            st.info("暂无可展示的资产类别占比数据。")
-        else:
-            st.dataframe(class_df, use_container_width=True, hide_index=True)
-
-    st.subheader("NAV 叠加")
-    nav_df, nav_warnings = _build_nav_compare(selected_runs, runs_df)
-    for msg in nav_warnings:
-        st.warning(msg)
-
-    if nav_df.empty or nav_df.shape[1] < 2:
-        st.info("可用于叠加的净值曲线不足 2 条（需有交集时间区间）。")
-        return
-
-    st.caption(f"交集区间：{nav_df.index.min().date()} ~ {nav_df.index.max().date()}，共 {len(nav_df)} 个点")
+    section(t("compare.nav_section"))
     st.line_chart(nav_df)
 
-    show_drawdown = st.toggle("显示回撤对比", value=False)
-    if show_drawdown:
-        st.subheader("回撤叠加")
-        st.line_chart(_drawdown_df(nav_df))
+    section(t("compare.drawdown_section"))
+    st.line_chart(_drawdown_df(nav_df))
+
+    section(t("compare.asset_section"))
+    class_df, class_warnings = _build_asset_compare(selected_runs, runs_df)
+    for msg in class_warnings:
+        st.warning(msg)
+    if class_df.empty:
+        empty_state(t("compare.no_asset_data"))
+    else:
+        st.dataframe(class_df, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":

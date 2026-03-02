@@ -5,18 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import sys
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from components import empty_state, page_header, section
+from i18n import t
 from quantlab.assets import get_asset_class, group_weights_by_asset_class, load_assets_map
 
-
-st.set_page_config(page_title="Run Detail", page_icon="🔎", layout="wide")
-
+st.set_page_config(page_title=t("detail.title"), page_icon="🔎", layout="wide")
 
 ASSETS_PATH = Path("data/assets.yaml")
 
@@ -26,11 +28,8 @@ def _safe_read_json(path: Path) -> dict:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
-    except FileNotFoundError:
-        st.warning(f"文件不存在：{path}")
-    except Exception as e:
-        st.error(f"读取 JSON 失败：{path.name}（{e}）")
-    return {}
+    except Exception:
+        return {}
 
 
 def _safe_read_yaml(path: Path) -> dict:
@@ -38,295 +37,259 @@ def _safe_read_yaml(path: Path) -> dict:
         with path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         return data if isinstance(data, dict) else {}
-    except FileNotFoundError:
-        st.warning(f"文件不存在：{path}")
-    except Exception as e:
-        st.error(f"读取 YAML 失败：{path.name}（{e}）")
-    return {}
+    except Exception:
+        return {}
 
 
 def _safe_read_parquet(path: Path) -> pd.DataFrame:
     try:
         return pd.read_parquet(path)
-    except FileNotFoundError:
-        st.warning(f"文件不存在：{path}")
-    except Exception as e:
-        st.error(f"读取 Parquet 失败：{path.name}（{e}）")
-    return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 
 def _pick_metric(metrics: dict, *keys: str):
     for key in keys:
         if key in metrics and metrics[key] is not None:
             return metrics[key]
+    for block in ("summary", "risk", "performance"):
+        sub = metrics.get(block, {})
+        if isinstance(sub, dict):
+            for key in keys:
+                if key in sub and sub[key] is not None:
+                    return sub[key]
     return None
 
 
-def _to_percent_text(value) -> str:
+def _to_percent_text(value: Any) -> str:
     if value is None or pd.isna(value):
         return "-"
-    return f"{value * 100:.2f}%"
+    return f"{float(value) * 100:.2f}%"
 
 
 def _normalize_equity_df(equity_df: pd.DataFrame) -> pd.DataFrame:
     if equity_df.empty:
         return equity_df
-
     df = equity_df.copy()
     if "ts" not in df.columns:
         if "date" in df.columns:
             df = df.rename(columns={"date": "ts"})
         elif "time" in df.columns:
             df = df.rename(columns={"time": "ts"})
-
     if "nav" not in df.columns:
         for candidate in ("equity", "portfolio_value", "value"):
             if candidate in df.columns:
                 df = df.rename(columns={candidate: "nav"})
                 break
-
     if "ts" in df.columns:
         df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
-        df = df.dropna(subset=["ts"]).sort_values("ts")
-
     if "nav" in df.columns:
         df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
-        df = df.dropna(subset=["nav"])
-
-    return df
+    return df.dropna(subset=[c for c in ["ts", "nav"] if c in df.columns]).sort_values("ts")
 
 
-def _render_header(run_id: str, config: dict):
+def _calc_nav_stats(equity_df: pd.DataFrame) -> dict[str, Any]:
+    if equity_df.empty or not {"ts", "nav"}.issubset(equity_df.columns):
+        return {}
+    df = equity_df[["ts", "nav"]].copy().dropna()
+    if len(df) < 2:
+        return {}
+    ret = df["nav"].pct_change().dropna()
+    total_return = df["nav"].iloc[-1] / df["nav"].iloc[0] - 1 if df["nav"].iloc[0] != 0 else float("nan")
+    days = max((df["ts"].iloc[-1] - df["ts"].iloc[0]).days, 1)
+    cagr = (df["nav"].iloc[-1] / df["nav"].iloc[0]) ** (365.0 / days) - 1 if df["nav"].iloc[0] > 0 else float("nan")
+    annual_vol = ret.std() * (252 ** 0.5)
+    downside = ret[ret < 0]
+    downside_vol = downside.std() * (252 ** 0.5) if not downside.empty else float("nan")
+    win_rate = (ret > 0).mean() if not ret.empty else float("nan")
+
+    dd = df["nav"] / df["nav"].cummax() - 1
+    max_dd = dd.min()
+    dd_end = dd.idxmin() if not dd.empty else None
+    dd_start = df["nav"].iloc[: dd_end + 1].idxmax() if dd_end is not None else None
+    dd_start_date = df.iloc[dd_start]["ts"] if dd_start is not None else None
+    dd_end_date = df.iloc[dd_end]["ts"] if dd_end is not None else None
+    dd_days = (dd_end_date - dd_start_date).days if dd_start_date is not None and dd_end_date is not None else None
+
+    return {
+        "start": df["ts"].iloc[0],
+        "end": df["ts"].iloc[-1],
+        "points": len(df),
+        "total_return": total_return,
+        "cagr": cagr,
+        "annual_vol": annual_vol,
+        "downside_vol": downside_vol,
+        "win_rate": win_rate,
+        "max_drawdown": max_dd,
+        "dd_start": dd_start_date,
+        "dd_end": dd_end_date,
+        "dd_days": dd_days,
+        "best_period": ret.max() if not ret.empty else float("nan"),
+        "worst_period": ret.min() if not ret.empty else float("nan"),
+    }
+
+
+def _display(v: Any, percent: bool = False, digits: int = 3) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "-"
+    if percent:
+        return f"{float(v) * 100:.2f}%"
+    if isinstance(v, pd.Timestamp):
+        return v.date().isoformat()
+    if isinstance(v, (int, float)):
+        return f"{float(v):.{digits}f}"
+    return str(v)
+
+
+def _render_header(run_id: str, config: dict) -> None:
     strategy = config.get("strategy")
     if isinstance(strategy, dict):
         strategy = strategy.get("name") or strategy.get("id")
-
     start = config.get("start") or config.get("start_date")
     end = config.get("end") or config.get("end_date")
+    page_header(t("detail.title"), t("detail.caption", run_id=run_id, started=f"{start or '-'} ~ {end or '-'}"), right=f"{t('runs.strategy')}: {strategy or '-'}")
 
-    rebalance = config.get("rebalance") or config.get("rebalance_freq") or config.get("frequency")
-    fee = config.get("fee")
-    if fee is None and isinstance(config.get("broker"), dict):
-        fee = config["broker"].get("fee_rate")
 
-    st.title("🔎 单实验详情")
+def _render_overview(metrics: dict, equity_df: pd.DataFrame) -> None:
+    section(t("detail.metrics"))
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(f"**run_id**: `{run_id}`")
-    c2.markdown(f"**strategy**: {strategy or '-'}")
-    c3.markdown(f"**start/end**: {start or '-'} ~ {end or '-'}")
-    fee_text = f"{fee:.4f}" if isinstance(fee, (int, float)) else (fee or "-")
-    c4.markdown(f"**参数摘要**: rebalance={rebalance or '-'}, fee={fee_text}")
-
-
-def _render_metric_cards(metrics: dict):
-    total_return = _pick_metric(metrics, "total_return")
-    cagr = _pick_metric(metrics, "cagr", "annual_return")
+    c1.metric(t("detail.total_return"), _to_percent_text(_pick_metric(metrics, "total_return")))
+    c2.metric(t("runs.cagr"), _to_percent_text(_pick_metric(metrics, "cagr", "annual_return")))
     sharpe = _pick_metric(metrics, "sharpe", "sharpe_ratio")
-    max_drawdown = _pick_metric(metrics, "max_drawdown")
+    c3.metric(t("detail.sharpe"), "-" if sharpe is None or pd.isna(sharpe) else f"{float(sharpe):.3f}")
+    c4.metric(t("detail.max_drawdown"), _to_percent_text(_pick_metric(metrics, "max_drawdown", "drawdown_max")))
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("total_return", _to_percent_text(total_return))
-    c2.metric("cagr", _to_percent_text(cagr))
-    c3.metric("sharpe", "-" if sharpe is None or pd.isna(sharpe) else f"{float(sharpe):.3f}")
-    c4.metric("max_drawdown", _to_percent_text(max_drawdown))
-
-
-def _risk_color(level: str) -> str:
-    mapping = {
-        "HIGH": "red",
-        "ELEVATED": "orange",
-        "MEDIUM": "goldenrod",
-        "NORMAL": "green",
-    }
-    return mapping.get(str(level).upper(), "gray")
-
-
-def _render_risk_status(results_dir: Path):
-    st.subheader("Risk Status")
-    risk_path = results_dir / "risk_status.json"
-    if not risk_path.exists():
-        st.info("无风险等级数据（risk_status.json）")
+    stats = _calc_nav_stats(equity_df)
+    section(t("detail.nav_summary"))
+    if not stats:
+        empty_state(t("detail.no_equity"))
         return
 
-    payload = _safe_read_json(risk_path)
+    r1 = st.columns(4)
+    r1[0].metric(t("detail.sample_range"), f"{_display(stats.get('start'))} ~ {_display(stats.get('end'))}")
+    r1[1].metric(t("detail.sample_points"), _display(stats.get("points"), digits=0))
+    r1[2].metric(t("detail.annual_vol"), _display(stats.get("annual_vol"), percent=True))
+    r1[3].metric(t("detail.downside_vol"), _display(stats.get("downside_vol"), percent=True))
+
+    r2 = st.columns(4)
+    r2[0].metric(t("detail.win_rate"), _display(stats.get("win_rate"), percent=True))
+    r2[1].metric(t("detail.best_period"), _display(stats.get("best_period"), percent=True))
+    r2[2].metric(t("detail.worst_period"), _display(stats.get("worst_period"), percent=True))
+    r2[3].metric(t("detail.dd_days"), _display(stats.get("dd_days"), digits=0))
+
+    st.caption(
+        f"{t('detail.dd_range')}: {_display(stats.get('dd_start'))} ~ {_display(stats.get('dd_end'))} | "
+        f"{t('detail.max_drawdown')}: {_display(stats.get('max_drawdown'), percent=True)}"
+    )
+
+
+def _render_nav_and_drawdown(equity_df: pd.DataFrame, metrics: dict) -> None:
+    if equity_df.empty or not {"ts", "nav"}.issubset(equity_df.columns):
+        empty_state(t("detail.no_equity"))
+        return
+    nav_df = equity_df[["ts", "nav"]].set_index("ts")
+    section(t("detail.nav_curve"))
+    st.line_chart(nav_df)
+    dd_curve = metrics.get("drawdown") or metrics.get("drawdown_curve")
+    if isinstance(dd_curve, list) and len(dd_curve) == len(nav_df):
+        dd = pd.Series(dd_curve, index=nav_df.index, name="drawdown")
+    else:
+        dd = nav_df["nav"] / nav_df["nav"].cummax() - 1
+    section(t("detail.drawdown_curve"))
+    st.line_chart(dd.to_frame(name="drawdown"))
+
+
+def _render_weights(weights_df: pd.DataFrame) -> None:
+    section(t("detail.allocation"))
+    if weights_df.empty:
+        empty_state(t("detail.no_weights"))
+        return
+    if {"ts", "symbol", "weight"}.issubset(weights_df.columns):
+        w = weights_df.copy()
+        w["ts"] = pd.to_datetime(w["ts"], errors="coerce")
+        w["weight"] = pd.to_numeric(w["weight"], errors="coerce")
+        view = w.dropna(subset=["ts", "symbol", "weight"]).pivot_table(index="ts", columns="symbol", values="weight", aggfunc="last")
+        st.dataframe(view, use_container_width=True)
+    else:
+        st.dataframe(weights_df, use_container_width=True)
+
+
+def _render_risk(results_dir: Path) -> None:
+    section(t("detail.risk_status"))
+    payload = _safe_read_json(results_dir / "risk_status.json")
     if not payload:
-        st.info("风险等级数据为空")
+        empty_state(t("detail.no_risk"))
         return
-
-    level = str(payload.get("risk_level", "NORMAL"))
-    color = _risk_color(level)
-    st.markdown(f"**Current Level:** :{color}[`{level}`]")
-
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("current_drawdown", _to_percent_text(payload.get("current_drawdown")))
     c2.metric("rolling_1y_return", _to_percent_text(payload.get("rolling_1y_return")))
     c3.metric("rolling_1y_vol", _to_percent_text(payload.get("rolling_1y_vol")))
-    r3s = payload.get("rolling_3y_sharpe")
-    c4.metric("rolling_3y_sharpe", "-" if r3s is None or pd.isna(r3s) else f"{float(r3s):.3f}")
-
-    reason = payload.get("reason")
-    if reason:
-        st.caption(f"reason: {reason}")
+    s = payload.get("rolling_3y_sharpe")
+    c4.metric("rolling_3y_sharpe", "-" if s is None or pd.isna(s) else f"{float(s):.3f}")
 
 
-def _render_nav_and_drawdown(equity_df: pd.DataFrame, metrics: dict):
-    st.subheader("NAV 曲线")
-    if equity_df.empty or not {"ts", "nav"}.issubset(equity_df.columns):
-        st.info("无净值数据")
+def _render_yearly_and_stress(results_dir: Path, weights_df: pd.DataFrame) -> None:
+    section(t("detail.yearly_analysis"))
+    yearly_df = _safe_read_parquet(results_dir / "yearly_stats.parquet")
+    if yearly_df.empty:
+        empty_state(t("detail.no_yearly"))
+    else:
+        st.dataframe(yearly_df, use_container_width=True, hide_index=True)
+
+    section(t("detail.stress_test"))
+    stress_payload = _safe_read_json(results_dir / "stress_test.json")
+    results = stress_payload.get("results", []) if isinstance(stress_payload, dict) else []
+    if not results:
+        empty_state(t("detail.no_stress"))
+    else:
+        st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+
+    section(t("detail.asset_class"))
+    if weights_df.empty or not ASSETS_PATH.exists():
+        empty_state(t("detail.no_asset_class"))
         return
-
-    nav_df = equity_df[["ts", "nav"]].set_index("ts")
-    st.line_chart(nav_df)
-
-    st.subheader("回撤曲线")
-    drawdown_series = None
-    drawdown_curve = metrics.get("drawdown") or metrics.get("drawdown_curve")
-    if isinstance(drawdown_curve, list) and len(drawdown_curve) == len(nav_df):
-        drawdown_series = pd.Series(drawdown_curve, index=nav_df.index, name="drawdown")
-
-    if drawdown_series is None:
-        rolling_max = nav_df["nav"].cummax()
-        drawdown_series = nav_df["nav"] / rolling_max - 1
-        drawdown_series.name = "drawdown"
-
-    st.line_chart(drawdown_series.to_frame())
-
-
-def _render_weights_heatmap(weights_df: pd.DataFrame):
-    st.subheader("权重热力图")
-    if weights_df.empty:
-        st.info("无权重数据")
-        return
-
-    required_cols = {"ts", "symbol", "weight"}
-    if required_cols.issubset(weights_df.columns):
-        w = weights_df.copy()
-        w["ts"] = pd.to_datetime(w["ts"], errors="coerce")
-        w["weight"] = pd.to_numeric(w["weight"], errors="coerce")
-        w = w.dropna(subset=["ts", "symbol", "weight"])
-        heatmap_df = w.pivot_table(index="ts", columns="symbol", values="weight", aggfunc="last").sort_index()
-        st.dataframe(heatmap_df, use_container_width=True)
-        return
-
-    if "ts" not in weights_df.columns:
-        st.warning("权重数据字段不完整，缺少 ts")
-        st.dataframe(weights_df, use_container_width=True)
-        return
-
-    wide_df = weights_df.copy()
-    wide_df["ts"] = pd.to_datetime(wide_df["ts"], errors="coerce")
-    wide_df = wide_df.dropna(subset=["ts"]).sort_values("ts").set_index("ts")
-    st.dataframe(wide_df, use_container_width=True)
-
-
-def _render_asset_class_exposure(weights_df: pd.DataFrame):
-    st.subheader("资产类别暴露")
-    if weights_df.empty:
-        st.info("无权重数据，跳过资产类别分析")
-        return
-
-    if not ASSETS_PATH.exists():
-        st.warning("未配置资产元数据（data/assets.yaml）")
-        return
-
     assets_map = load_assets_map(str(ASSETS_PATH))
-    if not assets_map:
-        st.warning("未配置资产元数据（data/assets.yaml）")
-        return
-
-    grouped = group_weights_by_asset_class(weights_df, assets_map)
+    grouped = group_weights_by_asset_class(weights_df, assets_map) if assets_map else pd.DataFrame()
     if grouped.empty or "ts" not in grouped.columns:
-        st.info("权重数据不可用于资产类别汇总")
+        empty_state(t("detail.no_asset_class"))
         return
+    class_cols = [c for c in grouped.columns if c != "ts"]
+    if not class_cols:
+        empty_state(t("detail.no_asset_class"))
+        return
+    st.line_chart(grouped.set_index("ts")[class_cols])
 
     symbol_cols = [c for c in weights_df.columns if c != "ts"]
     missing_symbols = sorted({str(s) for s in symbol_cols if get_asset_class(str(s), assets_map) == "other" and str(s) not in assets_map})
     if missing_symbols:
-        st.warning("以下 symbol 未在 assets.yaml 配置，已归类为 other：" + ", ".join(missing_symbols))
-
-    grouped = grouped.copy().sort_values("ts")
-    class_cols = [c for c in grouped.columns if c != "ts"]
-    if not class_cols:
-        st.info("没有可展示的资产类别列")
-        return
-
-    latest = grouped.iloc[-1][class_cols].to_frame(name="weight")
-    latest.index.name = "asset_class"
-    latest = latest.reset_index()
-    st.markdown("**期末资产类别权重**")
-    st.dataframe(latest, use_container_width=True, hide_index=True)
-
-    st.markdown("**资产类别权重时序曲线**")
-    st.line_chart(grouped.set_index("ts")[class_cols])
+        st.caption(t("detail.unmapped_symbols") + ": " + ", ".join(missing_symbols))
 
 
-def _render_yearly_and_stress_analysis(results_dir: Path):
-    st.subheader("年度收益分析")
-    yearly_path = results_dir / "yearly_stats.parquet"
-    if not yearly_path.exists():
-        st.info("无年度统计数据（yearly_stats.parquet）")
-    else:
-        yearly_df = _safe_read_parquet(yearly_path)
-        if yearly_df.empty:
-            st.info("年度统计为空")
-        else:
-            st.dataframe(yearly_df, use_container_width=True, hide_index=True)
-
-    st.subheader("压力测试")
-    stress_path = results_dir / "stress_test.json"
-    if not stress_path.exists():
-        st.info("无压力测试结果（stress_test.json）")
-        return
-
-    stress_payload = _safe_read_json(stress_path)
-    results = stress_payload.get("results", []) if isinstance(stress_payload, dict) else []
-    if not isinstance(results, list) or not results:
-        st.info("压力测试结果为空")
-        return
-
-    stress_df = pd.DataFrame(results)
-    st.dataframe(stress_df, use_container_width=True, hide_index=True)
-
-    if "max_drawdown" in stress_df.columns:
-        risky = stress_df[pd.to_numeric(stress_df["max_drawdown"], errors="coerce") < -0.3]
-        if not risky.empty:
-            years = ", ".join(str(int(y)) for y in risky["year"].tolist() if pd.notna(y))
-            st.error(f"⚠️ 压力年份最大回撤超过 -30%：{years}")
-
-
-def main():
+def main() -> None:
     run_id = st.session_state.get("selected_run_id")
     if not run_id:
-        st.warning("请先在 Runs 页面选择实验")
+        empty_state(t("detail.no_run"))
         return
-
     run_dir = Path("runs") / str(run_id)
     results_dir = run_dir / "results"
 
     metrics = _safe_read_json(results_dir / "metrics.json")
     config = _safe_read_yaml(run_dir / "config.yaml")
     equity_df = _normalize_equity_df(_safe_read_parquet(results_dir / "equity_curve.parquet"))
-
-    weights_path = results_dir / "weights.parquet"
-    weights_df = _safe_read_parquet(weights_path) if weights_path.exists() else pd.DataFrame()
+    weights_df = _safe_read_parquet(results_dir / "weights.parquet")
 
     _render_header(str(run_id), config)
-    _render_risk_status(results_dir)
-    st.divider()
-
-    _render_metric_cards(metrics)
-    st.divider()
-
-    _render_nav_and_drawdown(equity_df, metrics)
-    st.divider()
-
-    _render_weights_heatmap(weights_df)
-    st.divider()
-
-    _render_asset_class_exposure(weights_df)
-    st.divider()
-
-    _render_yearly_and_stress_analysis(results_dir)
+    tabs = st.tabs([t("detail.tab_overview"), t("detail.tab_nav_dd"), t("detail.tab_position"), t("detail.tab_risk"), t("detail.tab_yearly_stress")])
+    with tabs[0]:
+        _render_overview(metrics, equity_df)
+    with tabs[1]:
+        _render_nav_and_drawdown(equity_df, metrics)
+    with tabs[2]:
+        _render_weights(weights_df)
+    with tabs[3]:
+        _render_risk(results_dir)
+    with tabs[4]:
+        _render_yearly_and_stress(results_dir, weights_df)
 
 
 if __name__ == "__main__":
