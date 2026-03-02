@@ -5,12 +5,45 @@ Performance and risk metrics from backtest results.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
 from quantlab.research.risk import RiskMetrics, RiskAnalyzer
+
+
+@dataclass
+class PerformanceMetrics:
+    """Top-level performance summary metrics."""
+
+    total_return: float = 0.0
+    annualized_return: float = 0.0
+    volatility: float = 0.0
+    sharpe_ratio: float = 0.0
+    max_drawdown: float = 0.0
+    calmar_ratio: float = 0.0
+    total_trades: int = 0
+    total_fees: float = 0.0
+    total_impact_cost: float = 0.0
+    impact_cost_ratio: float = 0.0
+
+    def to_dict(self) -> Dict[str, float | int]:
+        """Serialize performance metrics to a plain dictionary."""
+        return {
+            "total_return": self.total_return,
+            "annualized_return": self.annualized_return,
+            "volatility": self.volatility,
+            "sharpe_ratio": self.sharpe_ratio,
+            "max_drawdown": self.max_drawdown,
+            "calmar_ratio": self.calmar_ratio,
+            "total_trades": self.total_trades,
+            "total_fees": self.total_fees,
+            "total_impact_cost": self.total_impact_cost,
+            "impact_cost_ratio": self.impact_cost_ratio,
+        }
+
 
 
 class MetricsCalculator:
@@ -125,18 +158,19 @@ class MetricsCalculator:
         trading: Dict
     ) -> Dict:
         """Create summary metrics."""
-        return {
-            "total_return": risk.total_return,
-            "annualized_return": risk.annualized_return,
-            "volatility": risk.annualized_volatility,
-            "sharpe_ratio": risk.sharpe_ratio,
-            "max_drawdown": risk.max_drawdown,
-            "calmar_ratio": risk.calmar_ratio,
-            "total_trades": trading["total_trades"],
-            "total_fees": trading["total_fees"],
-            "total_impact_cost": trading.get("total_impact_cost", 0),
-            "impact_cost_ratio": trading.get("impact_cost_ratio", 0),
-        }
+        summary = PerformanceMetrics(
+            total_return=risk.total_return,
+            annualized_return=risk.annualized_return,
+            volatility=risk.annualized_volatility,
+            sharpe_ratio=risk.sharpe_ratio,
+            max_drawdown=risk.max_drawdown,
+            calmar_ratio=risk.calmar_ratio,
+            total_trades=trading["total_trades"],
+            total_fees=trading["total_fees"],
+            total_impact_cost=trading.get("total_impact_cost", 0),
+            impact_cost_ratio=trading.get("impact_cost_ratio", 0),
+        )
+        return summary.to_dict()
     
     def generate_report_text(self, metrics: Dict) -> str:
         """Generate text report."""

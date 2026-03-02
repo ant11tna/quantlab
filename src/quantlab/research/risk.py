@@ -45,6 +45,29 @@ class RiskMetrics:
     alpha: Optional[float] = None
     information_ratio: Optional[float] = None
 
+    def to_dict(self) -> Dict[str, float | int | None]:
+        """Serialize risk metrics to a plain dictionary."""
+        return {
+            "total_return": self.total_return,
+            "annualized_return": self.annualized_return,
+            "volatility": self.volatility,
+            "annualized_volatility": self.annualized_volatility,
+            "sharpe_ratio": self.sharpe_ratio,
+            "sortino_ratio": self.sortino_ratio,
+            "calmar_ratio": self.calmar_ratio,
+            "max_drawdown": self.max_drawdown,
+            "max_drawdown_duration": self.max_drawdown_duration,
+            "avg_drawdown": self.avg_drawdown,
+            "var_95": self.var_95,
+            "var_99": self.var_99,
+            "cvar_95": self.cvar_95,
+            "skewness": self.skewness,
+            "kurtosis": self.kurtosis,
+            "beta": self.beta,
+            "alpha": self.alpha,
+            "information_ratio": self.information_ratio,
+        }
+
 
 @dataclass
 class RiskDecomposition:

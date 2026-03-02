@@ -1,0 +1,19 @@
+data:
+  symbols: [SPY, TLT, GLD]
+  start_date: '2020-01-01'
+  end_date: '2020-03-31'
+  data_dir: data/curated
+
+strategy:
+  name: equal_weight
+
+backtest:
+  initial_cash: 1000000
+  fee_model: us_etfs
+  rebalance_freq: M
+  progress: false
+
+execution:
+  participation_rate: 0.2
+  lot_size: 1
+  min_trade_qty: 1
