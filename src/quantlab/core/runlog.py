@@ -19,6 +19,25 @@ import yaml
 from loguru import logger
 
 
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """Recursively convert objects into JSON-serializable built-in types."""
+    if isinstance(obj, dict):
+        return {str(k): _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_to_jsonable(v) for v in obj]
+    if hasattr(obj, "to_dict"):
+        return _to_jsonable(obj.to_dict())
+    if isinstance(obj, (datetime, Path)):
+        return str(obj)
+    # numpy/pandas scalars
+    if hasattr(obj, "item"):
+        try:
+            return obj.item()
+        except Exception:
+            pass
+    return obj
 def _generate_short_hash(text: str, length: int = 6) -> str:
     """Generate short hash from text."""
     return hashlib.sha256(text.encode()).hexdigest()[:length]
@@ -271,9 +290,17 @@ def finalize_run(
     
     # Write metrics.json
     if metrics:
+        metrics_payload = _to_jsonable(metrics)
+        summary = metrics_payload.get("summary", {}) if isinstance(metrics_payload, dict) else {}
+        if isinstance(summary, dict):
+            metrics_payload.setdefault("total_return", summary.get("total_return"))
+            metrics_payload.setdefault("max_drawdown", summary.get("max_drawdown"))
+            sharpe = summary.get("sharpe", summary.get("sharpe_ratio"))
+            metrics_payload.setdefault("sharpe", sharpe)
+
         metrics_path = results_dir / "metrics.json"
         with open(metrics_path, 'w', encoding="utf-8") as f:
-            json.dump(metrics, f, indent=2, default=str)
+            json.dump(metrics_payload, f, indent=2, ensure_ascii=False)
         logger.info(f"Wrote metrics to {metrics_path}")
     
     # Write completion marker

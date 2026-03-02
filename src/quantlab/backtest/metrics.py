@@ -95,7 +95,7 @@ class MetricsCalculator:
         
         # Combine
         metrics = {
-            "risk": risk_metrics,
+            "risk": risk_metrics.to_dict(),
             "trading": trading_metrics,
             "summary": self._summary_metrics(risk_metrics, trading_metrics),
         }
@@ -170,7 +170,9 @@ class MetricsCalculator:
             total_impact_cost=trading.get("total_impact_cost", 0),
             impact_cost_ratio=trading.get("impact_cost_ratio", 0),
         )
-        return summary.to_dict()
+        summary_dict = summary.to_dict()
+        summary_dict["sharpe"] = summary_dict["sharpe_ratio"]
+        return summary_dict
     
     def generate_report_text(self, metrics: Dict) -> str:
         """Generate text report."""

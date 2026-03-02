@@ -71,23 +71,17 @@ def list_runs() -> pd.DataFrame:
     
     Returns columns:
         - run_id (str)
-        - started_at (datetime)
-        - name (str)
-        - hash (str)
-        - status (str): 'complete', 'incomplete', 'error'
+        - strategy (str)
+        - created_at (datetime)
         - total_return (float|None)
         - max_drawdown (float|None)
-        - sharpe_ratio (float|None)
-        - turnover (float|None)
-        - total_fees (float|None)
-        - total_impact_cost (float|None)
+        - sharpe (float|None)
+        - (compat) started_at/name/hash/status/sharpe_ratio/turnover/fees
     """
     if not RUNS_DIR.exists():
         logger.warning(f"Runs directory not found: {RUNS_DIR}")
         return pd.DataFrame(columns=[
-            "run_id", "started_at", "name", "hash", "status",
-            "total_return", "max_drawdown", "sharpe_ratio", "turnover",
-            "total_fees", "total_impact_cost"
+            "run_id", "strategy", "created_at", "total_return", "max_drawdown", "sharpe"
         ])
     
     runs = []
@@ -99,21 +93,36 @@ def list_runs() -> pd.DataFrame:
         run_id = run_dir.name
         started_at, name, hash_str = _parse_run_id(run_id)
         
-        # Check status by looking for metrics.json
-        metrics_path = _get_results_path(run_id, "metrics.json")
-        
-        if metrics_path is None:
-            status = "incomplete"
-            metrics = {}
-        else:
+        # Week1 contract: strictly read runs/<run_id>/results/metrics.json, missing => skip
+        metrics_path = run_dir / "results" / "metrics.json"
+        if not metrics_path.exists():
+            continue
+
+        try:
+            with open(metrics_path, 'r', encoding='utf-8') as f:
+                metrics = json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load metrics for {run_id}: {e}")
+            continue
+
+        config_path = run_dir / "config.yaml"
+        strategy = name
+        created_at = started_at
+        if config_path.exists():
             try:
-                with open(metrics_path, 'r') as f:
-                    metrics = json.load(f)
-                status = "complete"
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f) or {}
+                strategy = (
+                    config.get("strategy")
+                    or config.get("name")
+                    or config.get("default", {}).get("strategy")
+                    or strategy
+                )
+                config_created_at = config.get("created_at")
+                if config_created_at:
+                    created_at = pd.to_datetime(config_created_at)
             except Exception as e:
-                logger.warning(f"Failed to load metrics for {run_id}: {e}")
-                status = "error"
-                metrics = {}
+                logger.warning(f"Failed to parse config for {run_id}: {e}")
         
         # Extract metrics safely
         risk_metrics = metrics.get("risk", {})
@@ -136,13 +145,16 @@ def list_runs() -> pd.DataFrame:
         
         runs.append({
             "run_id": run_id,
+            "strategy": strategy,
+            "created_at": created_at,
             "started_at": started_at,
             "name": name,
             "hash": hash_str,
-            "status": status,
+            "status": "complete",
             "total_return": get_metric("total_return"),
             "max_drawdown": get_metric("max_drawdown"),
-            "sharpe_ratio": get_metric("sharpe_ratio"),
+            "sharpe": get_metric("sharpe", "sharpe_ratio"),
+            "sharpe_ratio": get_metric("sharpe", "sharpe_ratio"),
             "turnover": get_metric("turnover"),
             "total_fees": get_metric("total_fees"),
             "total_impact_cost": get_metric("total_impact_cost"),
@@ -152,8 +164,8 @@ def list_runs() -> pd.DataFrame:
     
     # Ensure all columns exist even if empty
     required_cols = [
-        "run_id", "started_at", "name", "hash", "status",
-        "total_return", "max_drawdown", "sharpe_ratio", "turnover",
+        "run_id", "strategy", "created_at", "started_at", "name", "hash", "status",
+        "total_return", "max_drawdown", "sharpe", "sharpe_ratio", "turnover",
         "total_fees", "total_impact_cost"
     ]
     for col in required_cols:
