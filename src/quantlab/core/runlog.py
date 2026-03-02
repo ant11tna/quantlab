@@ -82,6 +82,19 @@ def _to_decimal(value: Any) -> Optional[float]:
         return None
 
 
+def _load_data_version(path: Path = Path("data/data_version.json")) -> Optional[Dict[str, Any]]:
+    """Load data version metadata if available."""
+    if not path.exists():
+        return None
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def _build_metrics_v1(
     metrics_payload: Dict[str, Any],
     runtime_config: Optional[Dict[str, Any]] = None,
@@ -113,6 +126,7 @@ def _build_metrics_v1(
             "schema_version": "1.0",
             "created_at": datetime.now().isoformat(),
             "git_commit": _get_git_commit(),
+            "data_version": _load_data_version(),
         },
         "config": config_payload,
         "performance": {
@@ -230,8 +244,12 @@ def _scan_data_sources(data_dir: Path = Path("data"), include_hash: bool = True)
             filepath = Path(root) / file
             try:
                 stat = filepath.stat()
+                try:
+                    relative_path = str(filepath.resolve().relative_to(Path.cwd().resolve()))
+                except ValueError:
+                    relative_path = str(filepath)
                 entry = {
-                    "path": str(filepath.relative_to(Path.cwd())),
+                    "path": relative_path,
                     "size_bytes": stat.st_size,
                     "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(),
                     "ext": filepath.suffix,
@@ -407,12 +425,250 @@ def finalize_run(
         with open(metrics_path, 'w', encoding="utf-8") as f:
             json.dump(metrics_payload, f, indent=2, ensure_ascii=False)
         logger.info(f"Wrote metrics to {metrics_path}")
+
+    # Write yearly statistics and stress test report
+    _write_yearly_and_stress_reports(results_dir)
+    _write_analytics_and_risk_status(results_dir)
     
     # Write completion marker
     completion_path = run_dir / "completed"
     with open(completion_path, 'w', encoding="utf-8") as f:
         f.write(datetime.now().isoformat())
     logger.info(f"Run finalized: {run_dir}")
+
+
+def _compute_yearly_stats(equity_path: Path) -> "pd.DataFrame":
+    """Compute yearly return / max drawdown / volatility from equity curve."""
+    import pandas as pd
+
+    if not equity_path.exists():
+        return pd.DataFrame()
+
+    try:
+        equity_df = pd.read_parquet(equity_path)
+    except Exception:
+        return pd.DataFrame()
+
+    if equity_df.empty:
+        return pd.DataFrame()
+
+    df = equity_df.copy()
+    if "ts" not in df.columns:
+        for candidate in ("date", "time"):
+            if candidate in df.columns:
+                df = df.rename(columns={candidate: "ts"})
+                break
+
+    if "nav" not in df.columns:
+        for candidate in ("equity", "portfolio_value", "value"):
+            if candidate in df.columns:
+                df = df.rename(columns={candidate: "nav"})
+                break
+
+    if not {"ts", "nav"}.issubset(df.columns):
+        return pd.DataFrame()
+
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+    df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+    df = df.dropna(subset=["ts", "nav"]).sort_values("ts")
+    if df.empty:
+        return pd.DataFrame()
+
+    df["year"] = df["ts"].dt.year
+    out_rows: List[Dict[str, Any]] = []
+
+    for year, ydf in df.groupby("year"):
+        ydf = ydf.sort_values("ts")
+        if len(ydf) < 2:
+            continue
+
+        first_nav = float(ydf["nav"].iloc[0])
+        last_nav = float(ydf["nav"].iloc[-1])
+        annual_return = (last_nav / first_nav - 1.0) if first_nav != 0 else None
+
+        running_max = ydf["nav"].cummax()
+        drawdown = ydf["nav"] / running_max - 1.0
+        max_drawdown = float(drawdown.min()) if not drawdown.empty else None
+
+        returns = ydf["nav"].pct_change().dropna()
+        vol = float(returns.std() * (252 ** 0.5)) if len(returns) > 1 else None
+
+        out_rows.append(
+            {
+                "year": int(year),
+                "annual_return": annual_return,
+                "max_drawdown": max_drawdown,
+                "vol": vol,
+            }
+        )
+
+    return pd.DataFrame(out_rows).sort_values("year") if out_rows else pd.DataFrame()
+
+
+def _write_yearly_and_stress_reports(results_dir: Path) -> None:
+    """Write yearly_stats.parquet and stress_test.json if equity exists."""
+    stress_years = [2015, 2018, 2020, 2022]
+    yearly_stats_path = results_dir / "yearly_stats.parquet"
+    stress_test_path = results_dir / "stress_test.json"
+
+    yearly_df = _compute_yearly_stats(results_dir / "equity_curve.parquet")
+    if yearly_df.empty:
+        return
+
+    yearly_df.to_parquet(yearly_stats_path, index=False)
+    logger.info(f"Wrote yearly stats to {yearly_stats_path}")
+
+    stress_rows: List[Dict[str, Any]] = []
+    for year in stress_years:
+        row = yearly_df[yearly_df["year"] == year]
+        if row.empty:
+            continue
+        rec = row.iloc[0]
+        stress_rows.append(
+            {
+                "year": int(year),
+                "annual_return": rec.get("annual_return"),
+                "max_drawdown": rec.get("max_drawdown"),
+                "vol": rec.get("vol"),
+            }
+        )
+
+    payload = {
+        "stress_years": stress_years,
+        "results": stress_rows,
+    }
+    with open(stress_test_path, "w", encoding="utf-8") as f:
+        json.dump(_to_jsonable(payload), f, indent=2, ensure_ascii=False)
+    logger.info(f"Wrote stress test report to {stress_test_path}")
+
+
+def _build_analytics_from_equity(equity_path: Path) -> "pd.DataFrame":
+    """Compute drawdown and rolling analytics from equity curve."""
+    import pandas as pd
+
+    if not equity_path.exists():
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_parquet(equity_path)
+    except Exception:
+        return pd.DataFrame()
+
+    if df.empty:
+        return pd.DataFrame()
+
+    if "ts" not in df.columns:
+        for candidate in ("date", "time"):
+            if candidate in df.columns:
+                df = df.rename(columns={candidate: "ts"})
+                break
+
+    if "nav" not in df.columns:
+        for candidate in ("equity", "portfolio_value", "value"):
+            if candidate in df.columns:
+                df = df.rename(columns={candidate: "nav"})
+                break
+
+    if not {"ts", "nav"}.issubset(df.columns):
+        return pd.DataFrame()
+
+    out = df[["ts", "nav"]].copy()
+    out["ts"] = pd.to_datetime(out["ts"], errors="coerce")
+    out["nav"] = pd.to_numeric(out["nav"], errors="coerce")
+    out = out.dropna(subset=["ts", "nav"]).sort_values("ts")
+    if out.empty:
+        return pd.DataFrame()
+
+    out["returns"] = out["nav"].pct_change()
+    out["drawdown"] = out["nav"] / out["nav"].cummax() - 1.0
+
+    win_1y = 252
+    win_3y = 252 * 3
+
+    out["rolling_1y_return"] = out["nav"] / out["nav"].shift(win_1y) - 1.0
+    out["rolling_1y_vol"] = out["returns"].rolling(win_1y, min_periods=60).std() * (252 ** 0.5)
+
+    rolling_3y_mean = out["returns"].rolling(win_3y, min_periods=252).mean()
+    rolling_3y_std = out["returns"].rolling(win_3y, min_periods=252).std()
+    out["rolling_3y_sharpe"] = (rolling_3y_mean / rolling_3y_std) * (252 ** 0.5)
+
+    return out[["ts", "drawdown", "rolling_1y_return", "rolling_1y_vol", "rolling_3y_sharpe"]]
+
+
+def _build_risk_status_payload(analytics_df: "pd.DataFrame") -> Dict[str, Any]:
+    """Build current risk status based on analytics rules."""
+    import pandas as pd
+
+    if analytics_df.empty:
+        return {
+            "risk_level": "NORMAL",
+            "reason": "no_analytics",
+            "current_drawdown": None,
+            "rolling_1y_return": None,
+            "rolling_1y_vol": None,
+            "rolling_1y_sharpe": None,
+            "rolling_3y_sharpe": None,
+            "vol_p75": None,
+        }
+
+    last = analytics_df.iloc[-1]
+    current_drawdown = last.get("drawdown")
+    rolling_1y_return = last.get("rolling_1y_return")
+    rolling_1y_vol = last.get("rolling_1y_vol")
+    rolling_3y_sharpe = last.get("rolling_3y_sharpe")
+
+    # 1y sharpe for rule: mean/std over 1y window
+    returns_1y = None
+    rolling_1y_sharpe = None
+    try:
+        returns_1y = analytics_df["rolling_1y_return"].dropna()
+        if not returns_1y.empty and pd.notna(rolling_1y_vol) and float(rolling_1y_vol) > 0:
+            rolling_1y_sharpe = float(rolling_1y_return) / float(rolling_1y_vol)
+    except Exception:
+        rolling_1y_sharpe = None
+
+    vol_p75 = analytics_df["rolling_1y_vol"].dropna().quantile(0.75) if "rolling_1y_vol" in analytics_df else None
+
+    level = "NORMAL"
+    reason = "default"
+    if pd.notna(current_drawdown) and float(current_drawdown) < -0.30:
+        level = "HIGH"
+        reason = "current_drawdown_below_-0.30"
+    elif rolling_1y_sharpe is not None and float(rolling_1y_sharpe) < 0:
+        level = "ELEVATED"
+        reason = "rolling_1y_sharpe_below_0"
+    elif pd.notna(rolling_1y_vol) and pd.notna(vol_p75) and float(rolling_1y_vol) > float(vol_p75):
+        level = "MEDIUM"
+        reason = "rolling_1y_vol_above_p75"
+
+    return {
+        "risk_level": level,
+        "reason": reason,
+        "current_drawdown": current_drawdown,
+        "rolling_1y_return": rolling_1y_return,
+        "rolling_1y_vol": rolling_1y_vol,
+        "rolling_1y_sharpe": rolling_1y_sharpe,
+        "rolling_3y_sharpe": rolling_3y_sharpe,
+        "vol_p75": vol_p75,
+    }
+
+
+def _write_analytics_and_risk_status(results_dir: Path) -> None:
+    """Write analytics.parquet and risk_status.json."""
+    analytics_path = results_dir / "analytics.parquet"
+    risk_status_path = results_dir / "risk_status.json"
+
+    analytics_df = _build_analytics_from_equity(results_dir / "equity_curve.parquet")
+    if analytics_df.empty:
+        return
+
+    analytics_df.to_parquet(analytics_path, index=False)
+    logger.info(f"Wrote analytics to {analytics_path}")
+
+    payload = _build_risk_status_payload(analytics_df)
+    with risk_status_path.open("w", encoding="utf-8") as f:
+        json.dump(_to_jsonable(payload), f, indent=2, ensure_ascii=False)
+    logger.info(f"Wrote risk status to {risk_status_path}")
 
 
 def list_runs(base: str = "runs") -> List[Path]:

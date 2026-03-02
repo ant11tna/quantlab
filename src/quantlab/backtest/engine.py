@@ -28,6 +28,7 @@ from quantlab.core.types import (
 from quantlab.backtest.broker_sim import SimulatedBroker, load_fee_model, ExecutionConfig
 from quantlab.backtest.metrics import MetricsCalculator
 from quantlab.execution.router import ExecutionRouter
+from quantlab.rebalance import RebalanceRule, build_rebalance_rule
 from quantlab.research.portfolio import PortfolioBuilder, WeightOptimizer, WeightConstraints
 from quantlab.research.risk_constraints import RiskConstraintChecker, RiskConstraintConfig
 from quantlab.research.strategies.base import Strategy
@@ -135,6 +136,7 @@ class BacktestEngine:
         data: pd.DataFrame,
         rebalance_freq: Optional[str] = "M",
         rebalance_threshold: Optional[float] = None,
+        rebalance_rule: Optional[RebalanceRule] = None,
         progress: bool = True
     ) -> Dict:
         """Run backtest.
@@ -143,6 +145,7 @@ class BacktestEngine:
             data: Price data DataFrame (columns: ts, symbol, open, high, low, close, volume)
             rebalance_freq: Rebalance frequency (M=monthly, Q=quarterly)
             rebalance_threshold: Deviation threshold for rebalancing
+            rebalance_rule: Optional rule object. If provided, rebalance_freq / threshold are ignored.
             progress: Show progress bar
             
         Returns:
@@ -179,23 +182,21 @@ class BacktestEngine:
         dates = data["ts"].unique()
         symbols = data["symbol"].unique().tolist()
         
-        # Get rebalance dates
-        if rebalance_freq:
-            start = pd.Timestamp(dates[0])
-            end = pd.Timestamp(dates[-1])
-            rebalance_dates = set(
-                self.calendar.get_rebalance_dates(start, end, rebalance_freq)
-            )
-        else:
-            rebalance_dates = set()
+        # Build rule (default: monthly periodic)
+        if rebalance_rule is None:
+            if rebalance_threshold is not None:
+                rebalance_rule = build_rebalance_rule(
+                    {"type": "hybrid", "frequency": "monthly", "threshold": rebalance_threshold}
+                )
+            else:
+                freq_map = {"M": "monthly", "Q": "quarterly", "Y": "yearly"}
+                rule_freq = freq_map.get(str(rebalance_freq or "M").upper(), "monthly")
+                rebalance_rule = build_rebalance_rule({"type": "periodic", "frequency": rule_freq})
         
         logger.info(f"Running from {dates[0]} to {dates[-1]}")
-        logger.info(f"Rebalance dates: {len(rebalance_dates)}")
+        logger.info(f"Rebalance rule: {rebalance_rule.__class__.__name__}")
         
         # Main loop
-        current_weights: Dict[str, float] = {}
-        last_rebalance: Optional[datetime] = None
-        
         iterator = dates
         if progress:
             from tqdm import tqdm
@@ -207,38 +208,25 @@ class BacktestEngine:
             # Get today's bars
             day_data = data[data["ts"] == ts]
             bars_with_rows = self._create_bars(day_data)
-            bars = {s: bar for s, (bar, _) in bars_with_rows.items()}
             prices = {s: float(bar.close) for s, (bar, _) in bars_with_rows.items()}
             
             # Process any pending orders (pass full rows with regime fields)
             if self.broker:
                 self.broker.process_orders(ts, bars_with_rows)
             
-            # Check rebalance
-            needs_rebalance = False
-            
-            # Time-based rebalance
-            if ts in rebalance_dates:
-                needs_rebalance = True
-            
-            # Threshold-based rebalance
-            if rebalance_threshold is not None and last_rebalance is not None:
-                current_portfolio = self.broker.get_portfolio_state(ts)
-                nav = float(current_portfolio.nav)
-                
-                if nav > 0:
-                    deviation = self._calculate_weight_deviation(
-                        current_portfolio, prices, current_weights, nav
-                    )
-                    if deviation > rebalance_threshold:
-                        needs_rebalance = True
-                        logger.debug(f"Threshold rebalance triggered: {deviation:.2%}")
-            
+            # Build current/target weights and apply rule
+            current_portfolio = self.broker.get_portfolio_state(ts)
+            nav = float(current_portfolio.nav)
+            current_weights = self._portfolio_weights(current_portfolio, prices, nav)
+
+            proposed_targets = self._generate_targets(ts, data)
+            target_weights = {t.symbol: float(t.target_weight) for t in proposed_targets}
+
+            needs_rebalance = rebalance_rule.should_rebalance(ts, current_weights, target_weights)
+
             # Execute rebalance if needed
-            if needs_rebalance or (rebalance_dates and ts == min(rebalance_dates)):
-                targets = self._rebalance(ts, data, symbols, prices)
-                current_weights = {t.symbol: float(t.target_weight) for t in targets}
-                last_rebalance = ts
+            if needs_rebalance:
+                targets = self._rebalance(ts, data, symbols, prices, targets=proposed_targets)
                 self.rebalance_events.append(ts)
             
             # Record state
@@ -274,7 +262,8 @@ class BacktestEngine:
         ts: datetime,
         data: pd.DataFrame,
         symbols: List[str],
-        prices: Dict[str, float]
+        prices: Dict[str, float],
+        targets: Optional[List[TargetWeight]] = None,
     ) -> List[TargetWeight]:
         """Execute portfolio rebalance and record targets/orders for reconciliation."""
         # Get historical data up to current time
@@ -283,8 +272,9 @@ class BacktestEngine:
         # Get current state
         current_state = self.broker.get_portfolio_state(ts)
         
-        # Generate targets from strategy
-        targets = self.strategy.on_rebalance(hist_data, ts)
+        # Generate targets from strategy if not precomputed
+        if targets is None:
+            targets = self.strategy.on_rebalance(hist_data, ts)
         
         if not targets:
             return []
@@ -332,6 +322,27 @@ class BacktestEngine:
         logger.info(f"Rebalance at {ts}: {len(orders)} orders")
         
         return targets
+
+    def _generate_targets(self, ts: datetime, data: pd.DataFrame) -> List[TargetWeight]:
+        """Generate strategy targets without placing orders."""
+        hist_data = data[data["ts"] <= ts]
+        targets = self.strategy.on_rebalance(hist_data, ts)
+        return targets or []
+
+    def _portfolio_weights(
+        self,
+        portfolio: PortfolioState,
+        prices: Dict[str, float],
+        nav: float,
+    ) -> Dict[str, float]:
+        """Convert current portfolio to weight dict."""
+        if nav <= 0:
+            return {}
+
+        current_weights: Dict[str, float] = {}
+        for symbol, pos in portfolio.positions.items():
+            current_weights[symbol] = float(pos.qty) * prices.get(symbol, 0.0) / nav
+        return current_weights
     
     def _calculate_weight_deviation(
         self,

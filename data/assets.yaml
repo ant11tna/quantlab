@@ -1,0 +1,12 @@
+ETF:510300:
+  name: 沪深300ETF
+  asset_class: equity_cn
+ETF:510500:
+  name: 中证500ETF
+  asset_class: equity_cn
+ETF:518880:
+  name: 黄金ETF
+  asset_class: gold
+ETF:511010:
+  name: 国债ETF
+  asset_class: bond_cn

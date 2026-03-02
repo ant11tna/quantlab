@@ -12,6 +12,7 @@ like is_suspended, can_buy, can_sell), and writes optimized Parquet files.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -34,7 +35,7 @@ def setup_logging(verbose: bool = False):
     logger.add(sys.stderr, level=level)
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Curate raw OHLCV data to parquet with regime fields",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -117,6 +118,8 @@ Examples:
     if not args.dry_run:
         args.out_dir.mkdir(parents=True, exist_ok=True)
     
+    success = True
+
     # Build curated data
     if args.symbol:
         # Single symbol mode
@@ -157,7 +160,7 @@ Examples:
                 logger.info(f"Successfully curated: {result}")
             else:
                 logger.error(f"Failed to curate: {args.symbol}")
-                sys.exit(1)
+                success = False
     
     else:
         # Batch mode
@@ -191,9 +194,22 @@ Examples:
                     logger.info(f"  ... and {len(results) - 5} more")
             else:
                 logger.warning("No symbols were curated")
+
+    if not args.dry_run and success:
+        build_script = Path(__file__).resolve().parent / "build_data_version.py"
+        try:
+            subprocess.run([sys.executable, str(build_script)], check=True)
+            logger.info("Updated data/data_version.json")
+        except subprocess.CalledProcessError as exc:
+            logger.error(f"Failed to update data version metadata: {exc}")
+            return 1
+
+    if not success:
+        return 1
     
     logger.info("Curation complete!")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

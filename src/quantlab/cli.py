@@ -67,6 +67,45 @@ def _map_rebalance(value: Any) -> str:
     return mapping.get(str(value).strip().lower(), "M")
 
 
+def _resolve_rebalance_config(config: Dict[str, Any], grid_params: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve rebalance rule config with backward compatibility.
+
+    Preferred:
+      rebalance:
+        type: periodic|threshold|hybrid
+        frequency: monthly|quarterly|yearly
+        threshold: 0.05
+    """
+    rebalance_cfg = config.get("rebalance") if isinstance(config.get("rebalance"), dict) else {}
+
+    # Backward compatible fallbacks
+    if not rebalance_cfg and isinstance(config.get("default"), dict):
+        default_cfg = config.get("default", {})
+        if isinstance(default_cfg.get("rebalance"), dict):
+            rebalance_cfg = default_cfg.get("rebalance", {})
+
+    if not rebalance_cfg and isinstance(config.get("default"), dict):
+        rebalancing = config.get("default", {}).get("rebalancing", {})
+        if isinstance(rebalancing, dict):
+            mode = str(rebalancing.get("mode", "periodic")).lower()
+            rebalance_cfg = {
+                "type": "hybrid" if mode == "both" else mode,
+                "frequency": {"M": "monthly", "Q": "quarterly", "Y": "yearly"}.get(
+                    str(rebalancing.get("frequency", "M")).upper(), "monthly"
+                ),
+                "threshold": rebalancing.get("threshold", 0.05),
+            }
+
+    # Grid parameter can still override periodic frequency for experiments
+    if "rebalance" in grid_params:
+        rebalance_cfg = {**rebalance_cfg, "frequency": str(grid_params["rebalance"]).lower()}
+
+    if not rebalance_cfg:
+        rebalance_cfg = {"type": "periodic", "frequency": "monthly", "threshold": 0.05}
+
+    return rebalance_cfg
+
+
 def _run_single_backtest(config: Dict[str, Any], config_path: Path, config_text: str, grid_params: Dict[str, Any]) -> Path:
     """Run one backtest and return run directory."""
     from quantlab.backtest.engine import BacktestEngine
@@ -77,6 +116,7 @@ def _run_single_backtest(config: Dict[str, Any], config_path: Path, config_text:
     )
     from quantlab.data.sources.local_csv import MockDataSource
     from quantlab.data.ingest import DataIngestor
+    from quantlab.rebalance import build_rebalance_rule
     from quantlab.research.strategies.base import EqualWeightStrategy
 
     strategy_name = "momentum" if "momentum_window" in grid_params else "backtest"
@@ -110,7 +150,8 @@ def _run_single_backtest(config: Dict[str, Any], config_path: Path, config_text:
 
     strategy = EqualWeightStrategy(symbols=symbols)
     exec_config = config.get("default", {}).get("execution", {}) if config else {}
-    rebalance_freq = _map_rebalance(grid_params.get("rebalance", "monthly"))
+    rebalance_cfg = _resolve_rebalance_config(config, grid_params)
+    rebalance_rule = build_rebalance_rule(rebalance_cfg)
 
     engine = BacktestEngine(
         strategy=strategy,
@@ -121,7 +162,7 @@ def _run_single_backtest(config: Dict[str, Any], config_path: Path, config_text:
 
     results = engine.run(
         data=data,
-        rebalance_freq=rebalance_freq,
+        rebalance_rule=rebalance_rule,
         progress=True,
     )
 
@@ -150,7 +191,7 @@ def _run_single_backtest(config: Dict[str, Any], config_path: Path, config_text:
         "start": start.isoformat(),
         "end": end.isoformat(),
         "initial_cash": 1_000_000.0,
-        "rebalance": rebalance_freq,
+        "rebalance": rebalance_cfg,
         "fee": exec_config.get("fee_bps") if isinstance(exec_config, dict) else None,
         "slippage": exec_config.get("slippage_bps") if isinstance(exec_config, dict) else None,
         "strategy": strategy.__class__.__name__,
