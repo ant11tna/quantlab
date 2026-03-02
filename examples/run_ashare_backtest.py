@@ -240,8 +240,8 @@ def main():
     
     if "risk" in metrics:
         risk = metrics["risk"]
-        print(f"  Max Drawdown:   {risk.get('max_drawdown', 0):.2%}")
-        print(f"  Sharpe Ratio:   {risk.get('sharpe_ratio', 0):.2f}")
+        print(f"  Max Drawdown:   {getattr(risk, 'max_drawdown', 0):.2%}")
+        print(f"  Sharpe Ratio:   {getattr(risk, 'sharpe_ratio', 0):.2f}")
     
     print(f"\nTrading:")
     print(f"  Total Trades:   {len(trades_df)}")
