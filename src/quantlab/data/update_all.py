@@ -6,6 +6,7 @@ then builds curated parquet data in-process.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -40,6 +41,12 @@ def update_all(config_path: str | Path = "config/data_sources.yaml", force: bool
     raw_updated_ok = False
     curated_built_count = 0
 
+    repo_root = Path(__file__).resolve().parents[3]
+    src_path = str(repo_root / "src")
+    env = os.environ.copy()
+    old_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}{os.pathsep}{old_pythonpath}" if old_pythonpath else src_path
+
     cmd = [sys.executable, "scripts/update_data.py", "--config", str(config_path)]
     if force:
         cmd.append("--force")
@@ -47,6 +54,8 @@ def update_all(config_path: str | Path = "config/data_sources.yaml", force: bool
     try:
         proc = subprocess.run(
             cmd,
+            cwd=str(repo_root),
+            env=env,
             capture_output=True,
             text=True,
             check=False,

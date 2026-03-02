@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import sys
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+import ui.bootstrap  # noqa: F401
 
 from components import empty_state, page_header, section
 from components.common import info_card
