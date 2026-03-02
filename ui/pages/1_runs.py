@@ -1,355 +1,226 @@
-"""实验列表页 - 回测运行记录总览
-
-布局：
-    左侧：运行记录表格（支持搜索/排序）
-    右侧：选中运行的指标卡片 + 净值曲线
-
-图表：
-    1. 净值曲线：最近60个数据点
-    2. 成本拆解：手续费/冲击成本/滑点
-"""
+"""Runs Dashboard（实验列表页）- 浏览与筛选历史回测 runs。"""
 
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import datetime
 from pathlib import Path
 import sys
-from typing import Dict
+from typing import Any
 
 # 确保能 import i18n（指向 ui/ 目录）
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import streamlit as st
 import pandas as pd
+import streamlit as st
+import yaml
 from loguru import logger
 
 from i18n import t
-from ui.data.loader import (
-    list_runs, 
-    load_run, 
-    load_equity_curve,
-    equity_curve_to_echarts,
-    cost_breakdown_to_echarts,
-)
+
+RUNS_DIR = Path("runs")
 
 
-def format_pct(val, decimals: int = 2) -> str:
-    """格式化百分比"""
-    if val is None or pd.isna(val):
-        return "-"
-    return f"{val * 100:.{decimals}f}%"
-
-
-def format_number(val, decimals: int = 0) -> str:
-    """格式化数字（千分位）"""
-    if val is None or pd.isna(val):
-        return "-"
-    return f"{val:,.{decimals}f}"
-
-
-def render_metric_card(label: str, value: str, delta: str = None, color: str = None):
-    """渲染指标卡片"""
-    if color:
-        st.markdown(f"""
-        <div style="
-            background: {color}15;
-            border-left: 4px solid {color};
-            padding: 12px 16px;
-            border-radius: 4px;
-            margin-bottom: 8px;
-        ">
-            <div style="font-size: 12px; color: #666; margin-bottom: 4px;">{label}</div>
-            <div style="font-size: 24px; font-weight: 600; color: {color};">{value}</div>
-            {f'<div style="font-size: 12px; color: #888;">{delta}</div>' if delta else ''}
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.metric(label, value, delta)
-
-
-def render_equity_sparkline(equity_data: Dict, height: int = 200):
-    """渲染净值曲线迷你图"""
-    if not equity_data["dates"]:
-        st.info(t("runs.no_equity"))
-        return
-    
-    option = {
-        "grid": {"top": 10, "right": 10, "bottom": 20, "left": 40},
-        "xAxis": {
-            "type": "category",
-            "data": equity_data["dates"],
-            "show": False,
-        },
-        "yAxis": {
-            "type": "value",
-            "scale": True,
-            "axisLine": {"show": False},
-            "axisTick": {"show": False},
-            "splitLine": {"lineStyle": {"color": "#eee"}},
-        },
-        "series": [{
-            "type": "line",
-            "data": equity_data["values"],
-            "smooth": True,
-            "symbol": "none",
-            "lineStyle": {"width": 2, "color": "#5470c6"},
-            "areaStyle": {
-                "color": {
-                    "type": "linear",
-                    "x": 0, "y": 0, "x2": 0, "y2": 1,
-                    "colorStops": [
-                        {"offset": 0, "color": "#5470c640"},
-                        {"offset": 1, "color": "#5470c605"},
-                    ]
-                }
-            },
-        }],
-        "tooltip": {
-            "trigger": "axis",
-            "formatter": "{b}<br/>" + t("chart.nav") + ": ${c}",
-        },
-    }
-    
-    # Try streamlit-echarts if available
+def _safe_float(value: Any) -> float:
+    """将任意值安全转成 float，失败时返回 NaN。"""
     try:
-        from streamlit_echarts import st_echarts
-        st_echarts(option, height=f"{height}px")
-    except ImportError:
-        # Fallback to simple line chart
-        chart_df = pd.DataFrame({
-            t("chart.date"): equity_data["dates"],
-            t("chart.nav"): equity_data["values"]
-        })
-        st.line_chart(chart_df.set_index(t("chart.date")), height=height, use_container_width=True)
+        if value is None:
+            return float("nan")
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
 
 
-def render_cost_breakdown_bar(cost_data: Dict, height: int = 200):
-    """渲染成本拆解柱状图"""
-    if not cost_data["categories"]:
-        st.info(t("runs.no_cost"))
-        return
-    
-    option = {
-        "grid": {"top": 30, "right": 20, "bottom": 30, "left": 60},
-        "xAxis": {
-            "type": "category",
-            "data": cost_data["categories"],
-            "axisLine": {"lineStyle": {"color": "#ccc"}},
-            "axisLabel": {"color": "#666"},
-        },
-        "yAxis": {
-            "type": "value",
-            "name": t("chart.cost") + " ($)",
-            "nameTextStyle": {"color": "#666"},
-            "axisLine": {"show": False},
-            "axisTick": {"show": False},
-            "splitLine": {"lineStyle": {"color": "#eee"}},
-        },
-        "series": [{
-            "type": "bar",
-            "data": [
-                {"value": v, "itemStyle": {"color": "#ee6666" if i == 0 else "#fac858" if i == 1 else "#91cc75"}}
-                for i, v in enumerate(cost_data["values"])
-            ],
-            "barWidth": "50%",
-        }],
-        "tooltip": {
-            "trigger": "item",
-            "formatter": "{b}: ${c}",
-        },
-    }
-    
+def _created_at_from_run_dir(run_dir: Path) -> datetime:
+    """优先从 run_id 解析时间，失败时回退到目录 mtime。"""
+    run_id = run_dir.name
+    dt_str = run_id.split("__", maxsplit=1)[0]
     try:
-        from streamlit_echarts import st_echarts
-        st_echarts(option, height=f"{height}px")
-    except ImportError:
-        # Fallback to bar chart
-        chart_df = pd.DataFrame({
-            t("chart.date"): cost_data["categories"],
-            t("chart.cost"): cost_data["values"]
-        })
-        st.bar_chart(chart_df.set_index(t("chart.date")), height=height, use_container_width=True)
+        return datetime.strptime(dt_str, "%Y%m%d_%H%M%S")
+    except ValueError:
+        return datetime.fromtimestamp(run_dir.stat().st_mtime)
 
 
-def main():
-    """主函数"""
-    st.set_page_config(
-        page_title=t("app.title") + " - " + t("app.runs"),
-        page_icon="📊",
-        layout="wide",
-    )
-    
-    st.title(t("runs.title"))
-    
-    # 加载运行数据
-    runs_df = list_runs()
-    
+def _metric_value(metrics: dict[str, Any], *keys: str) -> Any:
+    """兼容不同 metrics 结构，按优先级查找字段。"""
+    sections = [
+        metrics,
+        metrics.get("summary", {}),
+        metrics.get("risk", {}),
+        metrics.get("trading", {}),
+    ]
+    for key in keys:
+        for section in sections:
+            if isinstance(section, dict) and key in section:
+                return section.get(key)
+    return None
+
+
+def build_runs_fingerprint(runs_dir: Path = RUNS_DIR) -> str:
+    """基于 run 子目录 + metrics/config mtime 生成 fingerprint。"""
+    if not runs_dir.exists():
+        return "missing_runs_dir"
+
+    parts: list[str] = []
+    for run_dir in sorted([p for p in runs_dir.iterdir() if p.is_dir()], key=lambda p: p.name):
+        metrics_path = run_dir / "results" / "metrics.json"
+        config_path = run_dir / "config.yaml"
+        metrics_mtime = metrics_path.stat().st_mtime_ns if metrics_path.exists() else 0
+        config_mtime = config_path.stat().st_mtime_ns if config_path.exists() else 0
+        parts.append(f"{run_dir.name}|{metrics_mtime}|{config_mtime}")
+
+    return hashlib.md5("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+@st.cache_data(show_spinner=False)
+def scan_runs(_fingerprint: str, runs_dir: str = "runs") -> pd.DataFrame:
+    """扫描 runs 目录并汇总为 DataFrame（缓存由 fingerprint 驱动失效）。"""
+    base_dir = Path(runs_dir)
+    columns = [
+        "run_id",
+        "strategy",
+        "total_return",
+        "cagr",
+        "sharpe",
+        "max_drawdown",
+        "start",
+        "end",
+        "created_at",
+        "results_dir",
+    ]
+    if not base_dir.exists():
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, Any]] = []
+    run_dirs = sorted([p for p in base_dir.iterdir() if p.is_dir()], key=lambda p: p.name, reverse=True)
+
+    for run_dir in run_dirs:
+        metrics_path = run_dir / "results" / "metrics.json"
+        if not metrics_path.exists():
+            continue
+
+        try:
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(f"Failed to load metrics for {run_dir.name}: {exc}")
+            continue
+
+        config: dict[str, Any] = {}
+        config_path = run_dir / "config.yaml"
+        if config_path.exists():
+            try:
+                config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            except Exception as exc:
+                logger.warning(f"Failed to parse config for {run_dir.name}: {exc}")
+
+        strategy = (
+            _metric_value(metrics, "strategy", "strategy_name")
+            or config.get("strategy")
+            or config.get("name")
+            or run_dir.name.split("__")[1] if "__" in run_dir.name else "unknown"
+        )
+
+        row = {
+            "run_id": run_dir.name,
+            "strategy": str(strategy),
+            "total_return": _safe_float(_metric_value(metrics, "total_return", "return_total")),
+            "cagr": _safe_float(_metric_value(metrics, "cagr", "annual_return")),
+            "sharpe": _safe_float(_metric_value(metrics, "sharpe", "sharpe_ratio")),
+            "max_drawdown": _safe_float(_metric_value(metrics, "max_drawdown", "drawdown_max")),
+            "start": _metric_value(metrics, "start", "start_date") or config.get("start"),
+            "end": _metric_value(metrics, "end", "end_date") or config.get("end"),
+            "created_at": _created_at_from_run_dir(run_dir),
+            "results_dir": str((run_dir / "results").as_posix()),
+        }
+        rows.append(row)
+
+    df = pd.DataFrame(rows, columns=columns)
+    if not df.empty:
+        df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+    return df
+
+
+def main() -> None:
+    st.set_page_config(page_title=t("app.title") + " - " + t("app.runs"), page_icon="📊", layout="wide")
+    st.title("Runs Dashboard")
+
+    fingerprint = build_runs_fingerprint(RUNS_DIR)
+    runs_df = scan_runs(fingerprint, str(RUNS_DIR))
+
     if runs_df.empty:
-        st.warning(t("runs.no_runs"))
-        st.info(t("runs.expected_path"))
+        st.info("暂无实验（runs 目录中没有可用 metrics.json）。")
+        st.session_state.pop("selected_run_id", None)
         return
-    
-    # 布局：左侧（表格）| 右侧（详情）
-    col_left, col_right = st.columns([2, 1])
-    
-    with col_left:
-        st.subheader(f"{t('runs.title')}（{len(runs_df)}）")
-        
-        # 搜索/筛选
-        search = st.text_input(t("runs.search"), "")
-        
-        # 筛选
-        filtered_df = runs_df
-        if search:
-            mask = (
-                runs_df["strategy"].str.contains(search, case=False, na=False) |
-                runs_df["run_id"].str.contains(search, case=False, na=False)
-            )
-            filtered_df = runs_df[mask]
-        
-        # 准备显示列
-        display_df = filtered_df.copy()
-        display_df["created_at"] = pd.to_datetime(display_df["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
-        display_df["total_return"] = display_df["total_return"].apply(format_pct)
-        display_df["max_drawdown"] = display_df["max_drawdown"].apply(format_pct)
-        display_df["sharpe"] = display_df["sharpe"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "-")
 
-        # 显示表格
-        st.dataframe(
-            display_df[["run_id", "strategy", "total_return", "max_drawdown", "sharpe", "created_at"]],
-            column_config={
-                "run_id": "run_id",
-                "strategy": "strategy",
-                "total_return": "total_return",
-                "max_drawdown": "max_drawdown",
-                "sharpe": "sharpe",
-                "created_at": "created_at",
-            },
-            hide_index=True,
-            use_container_width=True,
-            height=500,
-        )
-        
-        # 选择运行
-        selected_run = st.selectbox(
-            t("runs.select_for_detail"),
-            options=filtered_df["run_id"].tolist(),
-            format_func=lambda x: f"{x} ({filtered_df[filtered_df['run_id']==x]['strategy'].iloc[0]})"
-        )
-    
-    with col_right:
-        if selected_run:
-            st.subheader(t("runs.overview"))
-            
-            # 加载完整运行数据
-            run_data = load_run(selected_run)
-            metrics = run_data.get("metrics_dict", {}) or {}
-            
-            row = filtered_df[filtered_df["run_id"] == selected_run].iloc[0]
-            
-            # 状态指示器
-            status_labels = {
-                "complete": t("status.complete"),
-                "incomplete": t("status.incomplete"),
-                "error": t("status.error")
-            }
-            status_color = {
-                "complete": "#52c41a",
-                "incomplete": "#faad14",
-                "error": "#f5222d"
-            }.get(row["status"], "#999")
-            
-            st.markdown(f"""
-            <div style="
-                background: {status_color}15;
-                border: 1px solid {status_color}40;
-                border-radius: 8px;
-                padding: 16px;
-                margin-bottom: 16px;
-            ">
-                <div style="font-size: 14px; color: {status_color}; font-weight: 600;">
-                    {status_labels.get(row['status'], row['status']).upper()}
-                </div>
-                <div style="font-size: 12px; color: #666; margin-top: 4px;">
-                    {row['created_at'].strftime('%Y-%m-%d %H:%M:%S')}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # 关键指标
-            c1, c2 = st.columns(2)
-            with c1:
-                ret = row["total_return"]
-                ret_color = "#52c41a" if ret and ret > 0 else "#f5222d" if ret and ret < 0 else "#666"
-                render_metric_card(
-                    t("runs.total_return"), 
-                    format_pct(ret), 
-                    color=ret_color
-                )
-            with c2:
-                dd = row["max_drawdown"]
-                render_metric_card(
-                    t("runs.max_drawdown"), 
-                    format_pct(dd) if dd else "-",
-                    color="#f5222d" if dd and dd < -0.1 else "#faad14"
-                )
-            
-            c3, c4 = st.columns(2)
-            with c3:
-                sharpe = row["sharpe"]
-                render_metric_card(
-                    t("runs.sharpe"), 
-                    f"{sharpe:.2f}" if sharpe else "-"
-                )
-            with c4:
-                turnover = row["turnover"]
-                render_metric_card(
-                    t("runs.turnover"), 
-                    format_pct(turnover) if turnover else "-"
-                )
-            
-            # 成本摘要
-            fees = row["total_fees"]
-            impact = row["total_impact_cost"]
-            if fees or impact:
-                st.markdown("---")
-                st.caption(t("runs.trading_costs"))
-                cost_cols = st.columns(2)
-                with cost_cols[0]:
-                    st.metric(t("runs.fees"), f"${fees:,.2f}" if fees else "-")
-                with cost_cols[1]:
-                    st.metric(t("runs.impact"), f"${impact:,.2f}" if impact else "-")
-            
-            # 净值曲线
-            st.markdown("---")
-            st.caption(t("runs.equity_last60"))
-            
-            equity_df = load_equity_curve(selected_run)
-            if not equity_df.empty:
-                equity_data = equity_curve_to_echarts(equity_df, last_n=60)
-                render_equity_sparkline(equity_data, height=180)
-            else:
-                st.info(t("runs.no_equity"))
-            
-            # 成本拆解
-            st.markdown("---")
-            st.caption(t("runs.cost_breakdown"))
-            
-            cost_data = cost_breakdown_to_echarts(metrics)
-            render_cost_breakdown_bar(cost_data, height=180)
-            
-            # 操作按钮
-            st.markdown("---")
-            c5, c6 = st.columns(2)
-            with c5:
-                if st.button(t("runs.view_detail"), use_container_width=True):
-                    st.switch_page("pages/2_run_detail.py")
-            with c6:
-                if st.button(t("runs.view_config"), use_container_width=True):
-                    with st.expander(t("runs.config"), expanded=True):
-                        if run_data.get("config_text"):
-                            st.code(run_data["config_text"], language="yaml")
-                        else:
-                            st.info(t("runs.no_config"))
+    st.caption(f"共 {len(runs_df)} 个 runs")
+
+    c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+
+    with c1:
+        strategies = sorted(runs_df["strategy"].dropna().astype(str).unique().tolist())
+        selected_strategies = st.multiselect("Strategy", options=strategies, default=strategies)
+
+    with c2:
+        created_series = runs_df["created_at"].dropna()
+        min_date = created_series.min().date() if not created_series.empty else datetime.today().date()
+        max_date = created_series.max().date() if not created_series.empty else datetime.today().date()
+        date_range = st.date_input("Created At 范围", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+
+    with c3:
+        sort_field = st.selectbox("排序字段", options=["total_return", "sharpe", "max_drawdown", "created_at"], index=0)
+
+    with c4:
+        sort_asc = st.radio("方向", options=["降序", "升序"], index=0) == "升序"
+
+    filtered = runs_df.copy()
+    if selected_strategies:
+        filtered = filtered[filtered["strategy"].isin(selected_strategies)]
+
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start_dt = pd.to_datetime(date_range[0])
+        end_dt = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        filtered = filtered[(filtered["created_at"] >= start_dt) & (filtered["created_at"] <= end_dt)]
+
+    filtered = filtered.sort_values(by=sort_field, ascending=sort_asc, na_position="last")
+
+    if filtered.empty:
+        st.warning("筛选后暂无实验。")
+        st.session_state.pop("selected_run_id", None)
+        return
+
+    display_df = filtered[["run_id", "strategy", "total_return", "max_drawdown", "sharpe", "created_at"]].copy()
+    display_df["total_return"] = display_df["total_return"] * 100
+    display_df["max_drawdown"] = display_df["max_drawdown"] * 100
+
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "total_return": st.column_config.NumberColumn("total_return", format="%.2f%%"),
+            "max_drawdown": st.column_config.NumberColumn("max_drawdown", format="%.2f%%"),
+            "sharpe": st.column_config.NumberColumn("sharpe", format="%.3f"),
+            "created_at": st.column_config.DatetimeColumn("created_at", format="YYYY-MM-DD HH:mm:ss"),
+        },
+    )
+
+    valid_run_ids = filtered["run_id"].tolist()
+    previous = st.session_state.get("selected_run_id")
+    default_index = valid_run_ids.index(previous) if previous in valid_run_ids else 0
+
+    selected_run_id = st.selectbox("选择当前查看 run", options=valid_run_ids, index=default_index)
+    st.session_state["selected_run_id"] = selected_run_id
+
+    selected_row = filtered[filtered["run_id"] == selected_run_id].iloc[0]
+
+    if st.button("打开详情页/查看详情", type="primary"):
+        st.query_params["run_id"] = selected_run_id
+        st.switch_page("pages/2_run_detail.py")
+
+    st.markdown("---")
+    st.write(f"selected_run_id: `{selected_run_id}`")
+    st.write(f"results_dir: `{selected_row['results_dir']}`")
 
 
 if __name__ == "__main__":
