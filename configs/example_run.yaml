@@ -13,6 +13,11 @@ backtest:
   rebalance_freq: M
   progress: false
 
+rebalance:
+  type: hybrid
+  frequency: monthly
+  threshold: 0.05
+
 execution:
   participation_rate: 0.2
   lot_size: 1

@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+
+from quantlab.assets import group_weights_by_asset_class, load_assets_map
+
 
 st.set_page_config(page_title="Compare Runs", page_icon="📈", layout="wide")
 
 RUNS_DIR = Path("runs")
+ASSETS_PATH = Path("data/assets.yaml")
 
 
 def _safe_read_json(path: Path) -> dict[str, Any]:
@@ -89,7 +95,7 @@ def _load_equity_curve(path: Path) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def scan_runs(runs_dir: str = "runs") -> pd.DataFrame:
     base = Path(runs_dir)
-    columns = ["run_id", "metrics_path", "equity_path"]
+    columns = ["run_id", "metrics_path", "equity_path", "weights_path"]
     if not base.exists():
         return pd.DataFrame(columns=columns)
 
@@ -103,6 +109,7 @@ def scan_runs(runs_dir: str = "runs") -> pd.DataFrame:
                 "run_id": run_dir.name,
                 "metrics_path": str(metrics_path),
                 "equity_path": str(run_dir / "results" / "equity_curve.parquet"),
+                "weights_path": str(run_dir / "results" / "weights.parquet"),
             }
         )
 
@@ -180,6 +187,56 @@ def _drawdown_df(nav_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(drawdowns, index=nav_df.index)
 
 
+def _build_asset_class_compare(selected_runs: list[str], run_index_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    warnings: list[str] = []
+    if not ASSETS_PATH.exists():
+        warnings.append("未配置资产元数据（data/assets.yaml）")
+        return pd.DataFrame(), warnings
+
+    assets_map = load_assets_map(str(ASSETS_PATH))
+    if not assets_map:
+        warnings.append("未配置资产元数据（data/assets.yaml）")
+        return pd.DataFrame(), warnings
+
+    rows: list[dict[str, Any]] = []
+    for run_id in selected_runs:
+        item = run_index_df[run_index_df["run_id"] == run_id]
+        if item.empty:
+            continue
+
+        weights_path = Path(item.iloc[0]["weights_path"])
+        if not weights_path.exists():
+            warnings.append(f"{run_id}: 缺少 weights.parquet，跳过资产类别对比")
+            continue
+
+        try:
+            weights_df = pd.read_parquet(weights_path)
+        except Exception as e:
+            warnings.append(f"{run_id}: 读取 weights.parquet 失败（{e}）")
+            continue
+
+        grouped = group_weights_by_asset_class(weights_df, assets_map)
+        if grouped.empty or "ts" not in grouped.columns:
+            warnings.append(f"{run_id}: 权重数据不可用于资产类别汇总")
+            continue
+
+        grouped = grouped.sort_values("ts")
+        last_row = grouped.iloc[-1]
+        row: dict[str, Any] = {"run_id": run_id}
+        for col in grouped.columns:
+            if col == "ts":
+                continue
+            row[col] = _safe_float(last_row[col])
+        rows.append(row)
+
+    if not rows:
+        return pd.DataFrame(), warnings
+
+    out = pd.DataFrame(rows).fillna(0.0)
+    class_cols = sorted([c for c in out.columns if c != "run_id"])
+    return out[["run_id", *class_cols]], warnings
+
+
 def main() -> None:
     st.title("📈 多实验对比")
 
@@ -222,6 +279,18 @@ def main() -> None:
         )
     else:
         st.info("未读取到可展示的指标。")
+
+    show_asset_class = st.toggle("显示期末资产类别占比对比", value=False)
+    if show_asset_class:
+        st.subheader("期末资产类别占比对比")
+        class_df, class_warnings = _build_asset_class_compare(selected_runs, runs_df)
+        for msg in class_warnings:
+            st.warning(msg)
+
+        if class_df.empty:
+            st.info("暂无可展示的资产类别占比数据。")
+        else:
+            st.dataframe(class_df, use_container_width=True, hide_index=True)
 
     st.subheader("NAV 叠加")
     nav_df, nav_warnings = _build_nav_compare(selected_runs, runs_df)
