@@ -10,6 +10,13 @@ ZH = {
     "app.run_detail": "🔍 回测详情",
     "app.chart_demo": "📈 图表演示",
     "app.settings": "⚙️ 设置",
+    "app.update_all.section": "数据更新",
+    "app.update_all.button": "更新全部数据",
+    "app.update_all.force": "强制全量",
+    "app.update_all.running": "正在更新 raw 数据并构建 curated...",
+    "app.update_all.success": "数据更新完成：已构建 {count} 个 curated 文件，耗时 {elapsed}s",
+    "app.update_all.failed": "数据更新失败：{errors}",
+    "app.update_all.unknown_error": "未知错误",
     
     # 通用
     "common.search": "搜索",

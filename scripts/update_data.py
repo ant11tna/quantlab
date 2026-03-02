@@ -331,6 +331,26 @@ class AkShareDataUpdater:
         df.to_csv(filepath, index=False, encoding="utf-8")
         self.updated_files += 1
         logger.info(f"Saved {len(df)} rows to {filepath}")
+
+    @staticmethod
+    def _resolve_last_ts(last_ts_manifest: Optional[str], last_ts_file: Optional[str]) -> Optional[str]:
+        """Resolve newest timestamp between manifest and existing file."""
+
+        candidates = [ts for ts in [last_ts_manifest, last_ts_file] if ts]
+        if not candidates:
+            return None
+
+        parsed = []
+        for ts in candidates:
+            try:
+                parsed.append(datetime.strptime(ts, "%Y-%m-%d"))
+            except ValueError:
+                logger.warning(f"Invalid timestamp format '{ts}', ignored when resolving last_ts")
+
+        if not parsed:
+            return None
+
+        return max(parsed).strftime("%Y-%m-%d")
     
     def update_etf(self, force: bool = False):
         """Update all configured ETFs."""
@@ -355,9 +375,11 @@ class AkShareDataUpdater:
             if force or not filepath.exists():
                 start_date = "20150101"  # Fetch full history
             else:
-                last_ts = self.manifest.get_last_ts("etf", internal_symbol)
+                last_ts_manifest = self.manifest.get_last_ts("etf", internal_symbol)
+                df_existing = self._load_existing(filepath)
+                last_ts_file = df_existing["ts"].max() if not df_existing.empty else None
+                last_ts = self._resolve_last_ts(last_ts_manifest, last_ts_file)
                 if last_ts:
-                    # Start from next day
                     start_date = (datetime.strptime(last_ts, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
                 else:
                     start_date = "20150101"
@@ -413,7 +435,10 @@ class AkShareDataUpdater:
             if force or not filepath.exists():
                 start_date = "20100101"
             else:
-                last_ts = self.manifest.get_last_ts("index", internal_symbol)
+                last_ts_manifest = self.manifest.get_last_ts("index", internal_symbol)
+                df_existing = self._load_existing(filepath)
+                last_ts_file = df_existing["ts"].max() if not df_existing.empty else None
+                last_ts = self._resolve_last_ts(last_ts_manifest, last_ts_file)
                 if last_ts:
                     start_date = (datetime.strptime(last_ts, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
                 else:
