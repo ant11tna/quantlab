@@ -2,10 +2,19 @@
 
 import ui.bootstrap  # noqa: F401
 
+import pandas as pd
 import streamlit as st
 from i18n import t
 from style import apply_global_style
-from quantlab.data.update_all import update_all_stream
+from ui.components.dashboard import (
+    _run_update_stream_ui,
+    render_data_health,
+    render_portfolio_snapshot,
+    render_quick_actions,
+    render_recent_runs_table,
+    render_system_status,
+)
+from ui.data.loader import list_runs
 
 st.set_page_config(
     page_title=t("app.title"),
@@ -13,9 +22,6 @@ st.set_page_config(
     layout="wide",
 )
 apply_global_style()
-
-st.title(t("app.title"))
-st.markdown(t("app.subtitle"))
 
 st.sidebar.title(t("app.nav"))
 
@@ -27,53 +33,55 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader(t("app.update_all.section"))
-    force_update_all = st.checkbox(t("app.update_all.force"), value=False)
+    force_update_all = st.checkbox(t("app.update_all.force"), value=False, key="force_update_all")
 
     if st.button(t("app.update_all.button"), use_container_width=True):
-        progress = st.sidebar.progress(0)
-        status = st.sidebar.empty()
-        detail = st.sidebar.empty()
-        backend = st.sidebar.empty()
-        err = st.sidebar.empty()
+        _run_update_stream_ui(force_update_all, sidebar=True)
 
-        errors = []
-        current_stage = None
+# Dashboard main area
+st.title("QuantLab 研究终端")
 
-        for ev in update_all_stream(force=force_update_all):
-            ev_type = ev.get("type")
-            if ev_type == "progress":
-                stage = ev.get("stage", "unknown")
-                if stage != current_stage:
-                    current_stage = stage
-                    progress.progress(0)
+try:
+    render_system_status()
+except Exception as exc:
+    st.warning(f"系统状态区块暂不可用：{exc}")
 
-                done = ev.get("done", 0) or 0
-                total = ev.get("total", 0) or 0
-                pct = done / max(total, 1)
-                progress.progress(min(max(pct, 0.0), 1.0))
-                status.info(f"{str(stage).upper()} {done}/{total}")
-                detail.write(f"{ev.get('symbol', '')}")
-            elif ev_type == "start" and ev.get("stage") == "raw":
-                backend.info(f"后台进程 PID={ev.get('pid')}\n{ev.get('cmd', '')}")
-            elif ev_type == "heartbeat" and ev.get("stage") == "raw":
-                backend.info(f"后台进程运行中 PID={ev.get('pid')} · 已运行 {ev.get('elapsed', 0)}s")
-            elif ev_type == "log" and ev.get("stage") == "raw":
-                detail.write(str(ev.get("message", ""))[:200])
-            elif ev_type == "error":
-                errors.append(ev)
-                stage = str(ev.get("stage", "unknown")).upper()
-                symbol = ev.get("symbol", "")
-                message = str(ev.get("message", ""))[:120]
-                err.warning(f"{stage} {symbol} 失败：{message}")
-            elif ev_type == "done" and "stage" not in ev:
-                if ev.get("ok"):
-                    st.sidebar.success("数据更新完成")
-                else:
-                    st.sidebar.error(
-                        f"更新完成但有错误: raw={ev.get('raw_error_count', 0)}, curated={ev.get('curated_error_count', 0)}"
-                    )
+try:
+    runs_df = list_runs()
+except Exception as exc:
+    st.warning(f"运行列表扫描失败：{exc}")
+    runs_df = None
 
-        st.cache_data.clear()
-        st.rerun()
+if runs_df is None:
+    runs_df = pd.DataFrame()
 
-st.info(t("app.home"))
+latest_run_id = st.session_state.get("selected_run_id") if isinstance(st.session_state.get("selected_run_id"), str) else None
+if (not latest_run_id) and not runs_df.empty and "run_id" in runs_df.columns:
+    try:
+        ordered = runs_df.sort_values("created_at", ascending=False, na_position="last") if "created_at" in runs_df.columns else runs_df
+        latest_run_id = str(ordered.iloc[0]["run_id"])
+    except Exception:
+        latest_run_id = str(runs_df.iloc[0]["run_id"]) if "run_id" in runs_df.columns and not runs_df.empty else None
+
+if latest_run_id:
+    st.session_state["selected_run_id"] = latest_run_id
+
+try:
+    render_portfolio_snapshot(latest_run_id or "")
+except Exception as exc:
+    st.warning(f"组合快照区块暂不可用：{exc}")
+
+try:
+    render_recent_runs_table(runs_df)
+except Exception as exc:
+    st.warning(f"最近运行区块暂不可用：{exc}")
+
+try:
+    render_data_health()
+except Exception as exc:
+    st.warning(f"数据健康区块暂不可用：{exc}")
+
+try:
+    render_quick_actions()
+except Exception as exc:
+    st.warning(f"快捷操作区块暂不可用：{exc}")
