@@ -33,6 +33,7 @@ with st.sidebar:
         progress = st.sidebar.progress(0)
         status = st.sidebar.empty()
         detail = st.sidebar.empty()
+        backend = st.sidebar.empty()
         err = st.sidebar.empty()
 
         errors = []
@@ -52,6 +53,12 @@ with st.sidebar:
                 progress.progress(min(max(pct, 0.0), 1.0))
                 status.info(f"{str(stage).upper()} {done}/{total}")
                 detail.write(f"{ev.get('symbol', '')}")
+            elif ev_type == "start" and ev.get("stage") == "raw":
+                backend.info(f"后台进程 PID={ev.get('pid')}\n{ev.get('cmd', '')}")
+            elif ev_type == "heartbeat" and ev.get("stage") == "raw":
+                backend.info(f"后台进程运行中 PID={ev.get('pid')} · 已运行 {ev.get('elapsed', 0)}s")
+            elif ev_type == "log" and ev.get("stage") == "raw":
+                detail.write(str(ev.get("message", ""))[:200])
             elif ev_type == "error":
                 errors.append(ev)
                 stage = str(ev.get("stage", "unknown")).upper()
