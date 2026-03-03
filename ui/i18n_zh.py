@@ -123,6 +123,14 @@ ZH = {
     # 本次 UI 升级
     "app.compare_runs": "📈 对比 Runs",
 
+    "home.title": "QuantLab 研究终端",
+    "home.system_status_unavailable": "系统状态暂不可用：{error}",
+    "home.runs_scan_failed": "扫描回测记录失败：{error}",
+    "home.portfolio_snapshot_unavailable": "组合快照暂不可用：{error}",
+    "home.recent_runs_table_unavailable": "最近回测表格暂不可用：{error}",
+    "home.data_health_unavailable": "数据健康检查暂不可用：{error}",
+    "home.quick_actions_unavailable": "快捷操作暂不可用：{error}",
+
     "runs.subtitle": "快速筛选并进入实验详情",
     "runs.kpi_section": "核心指标",
     "runs.kpi_count": "Runs 总数",
