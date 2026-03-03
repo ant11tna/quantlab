@@ -366,7 +366,8 @@ class AkShareDataUpdater:
 
         logger.info(f"Processing ETF: {symbol}")
 
-        internal_symbol = f"ETF:{symbol}"
+        prefix = config.get("symbol_prefix", "ETF")
+        internal_symbol = f"{prefix}_{symbol}"
         filepath = out_dir / f"{internal_symbol}.csv"
 
         if force or not filepath.exists():
@@ -424,7 +425,8 @@ class AkShareDataUpdater:
 
         logger.info(f"Processing Index: {symbol}")
 
-        internal_symbol = f"IDX:{symbol}"
+        prefix = config.get("symbol_prefix", "IDX")
+        internal_symbol = f"{prefix}_{symbol}"
         filepath = out_dir / f"{internal_symbol}.csv"
 
         if force or not filepath.exists():
