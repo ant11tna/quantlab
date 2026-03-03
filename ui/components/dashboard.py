@@ -67,7 +67,7 @@ def _fmt_num(v: object, digits: int = 3) -> str:
 
 def render_system_status() -> None:
     """Render basic system/run status cards."""
-    st.subheader("🖥️ System Status")
+    st.subheader(t("home.system_status.title"))
 
     def _latest_file_mtime(root: Path) -> datetime | None:
         if not root.exists() or not root.is_dir():
@@ -118,7 +118,7 @@ def render_system_status() -> None:
         ]
         existing = [p for p in candidates if p.exists() and p.is_file()]
         if not existing:
-            return "🟡 Unknown"
+            return t("home.system_status.unknown")
 
         latest_file = max(existing, key=lambda p: p.stat().st_mtime)
         if latest_file.suffix == ".json":
@@ -128,22 +128,22 @@ def render_system_status() -> None:
                 raw_err = int(payload.get("raw_error_count", 0) or 0)
                 curated_err = int(payload.get("curated_error_count", 0) or 0)
                 if ok is True and raw_err == 0 and curated_err == 0:
-                    return "🟢 Healthy"
+                    return t("home.system_status.healthy")
                 if raw_err > 0 or curated_err > 0 or ok is False:
-                    return "🔴 Error"
-                return "🟡 Unknown"
+                    return t("home.system_status.error")
+                return t("home.system_status.unknown")
             except Exception:
-                return "🟡 Unknown"
+                return t("home.system_status.unknown")
 
         try:
             tail = latest_file.read_text(encoding="utf-8", errors="ignore")[-3000:].lower()
         except Exception:
-            return "🟡 Unknown"
+            return t("home.system_status.unknown")
         if "error" in tail or "failed" in tail:
-            return "🔴 Error"
+            return t("home.system_status.error")
         if "finished" in tail or "success" in tail or "ok" in tail:
-            return "🟢 Healthy"
-        return "🟡 Unknown"
+            return t("home.system_status.healthy")
+        return t("home.system_status.unknown")
 
     raw_dir = Path("data/raw")
     curated_dir = Path("data/curated")
@@ -151,24 +151,24 @@ def render_system_status() -> None:
     raw_mtime = _latest_file_mtime(raw_dir)
     curated_mtime = _latest_file_mtime(curated_dir)
     latest_data_mtime = max([d for d in [raw_mtime, curated_mtime] if d is not None], default=None)
-    data_updated_text = latest_data_mtime.strftime("%Y-%m-%d %H:%M:%S") if latest_data_mtime else "N/A"
+    data_updated_text = latest_data_mtime.strftime("%Y-%m-%d %H:%M:%S") if latest_data_mtime else t("common.not_available")
 
-    latest_run = _latest_run() or "N/A"
+    latest_run = _latest_run() or t("common.not_available")
 
     raw_ok = _has_any_file(raw_dir)
     curated_ok = _has_any_file(curated_dir)
     if raw_ok or curated_ok:
-        integrity = "🟢 OK"
+        integrity = t("common.status_ok")
     else:
-        integrity = "🔴 Missing"
+        integrity = t("common.status_missing")
 
     system_status = _find_last_update_status()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Data Updated", data_updated_text)
-    c2.metric("Latest Run", latest_run)
-    c3.metric("Data Integrity", integrity)
-    c4.metric("System Status", system_status)
+    c1.metric(t("home.system_status.data_updated"), data_updated_text)
+    c2.metric(t("home.system_status.latest_run"), latest_run)
+    c3.metric(t("home.system_status.data_integrity"), integrity)
+    c4.metric(t("home.system_status.system_health"), system_status)
 
     runs_df = list_runs()
     if runs_df.empty:
@@ -177,10 +177,10 @@ def render_system_status() -> None:
 
 def render_portfolio_snapshot(run_id: str) -> None:
     """Render portfolio snapshot metrics and optional NAV curve."""
-    st.subheader("📌 Portfolio Snapshot")
+    st.subheader(t("home.portfolio_snapshot.title"))
 
     if not run_id:
-        st.info("No run selected.")
+        st.info(t("home.portfolio_snapshot.no_run_selected"))
         return
 
     run_data = load_run(run_id)
@@ -264,7 +264,7 @@ def render_portfolio_snapshot(run_id: str) -> None:
     if not plot_df.empty:
         st.line_chart(plot_df.set_index("ts")["nav"])
     else:
-        st.info(f"{run_id}: equity_curve unavailable, chart skipped")
+        st.info(t("home.portfolio_snapshot.equity_unavailable", run_id=run_id))
 
 
 
@@ -292,7 +292,7 @@ def _sort_recent_runs(runs_df: pd.DataFrame) -> pd.DataFrame:
 
 def render_recent_runs_table(runs_df: pd.DataFrame) -> None:
     """Render recent runs table with quick detail/compare actions."""
-    st.subheader("🕘 Recent Runs")
+    st.subheader(t("home.recent_runs.title"))
 
     if runs_df.empty or "run_id" not in runs_df.columns:
         st.info(t("runs.empty"))
@@ -330,16 +330,18 @@ def render_recent_runs_table(runs_df: pd.DataFrame) -> None:
     options = ordered["run_id"].astype(str).tolist()
     prev_selected = st.session_state.get("selected_run_id")
     default_run_id = prev_selected if isinstance(prev_selected, str) and prev_selected in options else options[0]
-    selected_run_id = st.selectbox("Run ID", options=options, index=options.index(default_run_id), key="recent_runs_selector")
+    selected_run_id = st.selectbox(
+        t("home.recent_runs.run_id"), options=options, index=options.index(default_run_id), key="recent_runs_selector"
+    )
     st.session_state["selected_run_id"] = selected_run_id
 
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Open Detail", use_container_width=True, key="recent_open_detail"):
+        if st.button(t("home.recent_runs.open_detail"), use_container_width=True, key="recent_open_detail"):
             st.query_params["run_id"] = selected_run_id
             st.switch_page("pages/2_run_detail.py")
     with c2:
-        if st.button("Add to Compare", use_container_width=True, key="recent_add_compare"):
+        if st.button(t("home.recent_runs.add_to_compare"), use_container_width=True, key="recent_add_compare"):
             basket = st.session_state.get("compare_basket", [])
             if not isinstance(basket, list):
                 basket = []
@@ -347,21 +349,21 @@ def render_recent_runs_table(runs_df: pd.DataFrame) -> None:
             if selected_run_id not in basket:
                 basket.append(selected_run_id)
                 st.session_state["compare_basket"] = basket
-                st.success(f"Added to compare: {selected_run_id}")
+                st.success(t("home.recent_runs.added_to_compare", run_id=selected_run_id))
             else:
-                st.info(f"Already in compare basket: {selected_run_id}")
+                st.info(t("home.recent_runs.already_in_compare", run_id=selected_run_id))
 
 
 def render_data_health() -> None:
     """Lightweight data health monitoring for core data directories."""
-    st.subheader("🧪 Data Health")
+    st.subheader(t("home.data_health.title"))
 
     def _scan_dir(root: Path) -> dict[str, object]:
         if not root.exists() or not root.is_dir():
             return {
                 "directory": root.as_posix(),
-                "status": "Missing",
-                "last_updated": "N/A",
+                "status": t("common.status_missing_text"),
+                "last_updated": t("common.not_available"),
                 "file_count": 0,
             }
 
@@ -378,11 +380,11 @@ def render_data_health() -> None:
             latest_mtime = mtime if latest_mtime is None else max(latest_mtime, mtime)
 
         if file_count == 0:
-            status = "Empty"
-            last_updated = "N/A"
+            status = t("common.status_empty")
+            last_updated = t("common.not_available")
         else:
-            status = "OK"
-            last_updated = datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M:%S") if latest_mtime else "N/A"
+            status = t("common.status_ok_text")
+            last_updated = datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M:%S") if latest_mtime else t("common.not_available")
 
         return {
             "directory": root.as_posix(),
@@ -447,19 +449,23 @@ def _run_update_stream_ui(force_update_all: bool, *, sidebar: bool = False) -> N
 
 def render_quick_actions() -> None:
     """Render quick-action buttons and homepage update trigger."""
-    st.subheader("⚡ Quick Actions")
+    st.subheader(t("home.quick_actions.title"))
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("View Runs", use_container_width=True, key="qa_view_runs"):
+        if st.button(t("home.quick_actions.view_runs"), use_container_width=True, key="qa_view_runs"):
             st.switch_page("pages/1_runs.py")
     with c2:
-        if st.button("Compare Runs", use_container_width=True, key="qa_compare_runs"):
+        if st.button(t("home.quick_actions.compare_runs"), use_container_width=True, key="qa_compare_runs"):
             st.switch_page("pages/3_compare_runs.py")
     with c3:
         force_update_all = bool(st.session_state.get("force_update_all", False))
-        if st.button("Update All", use_container_width=True, key="qa_update_all"):
+        if st.button(t("home.quick_actions.update_all"), use_container_width=True, key="qa_update_all"):
             _run_update_stream_ui(force_update_all, sidebar=False)
 
-    st.caption(f"Force Update All (sidebar): {'ON' if st.session_state.get('force_update_all', False) else 'OFF'}")
-
+    st.caption(
+        t(
+            "home.quick_actions.force_update_status",
+            state=t("common.on") if st.session_state.get("force_update_all", False) else t("common.off"),
+        )
+    )
