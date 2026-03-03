@@ -30,6 +30,14 @@ ZH = {
     "common.nav_runs": "回测列表",
     "common.nav_demo": "图表演示",
     "common.view": "查看",
+    "common.not_available": "暂无",
+    "common.on": "开启",
+    "common.off": "关闭",
+    "common.status_ok": "🟢 正常",
+    "common.status_missing": "🔴 缺失",
+    "common.status_ok_text": "正常",
+    "common.status_missing_text": "缺失",
+    "common.status_empty": "空目录",
     
     # 状态
     "status.all": "全部",
@@ -130,6 +138,33 @@ ZH = {
     "home.recent_runs_table_unavailable": "最近回测表格暂不可用：{error}",
     "home.data_health_unavailable": "数据健康检查暂不可用：{error}",
     "home.quick_actions_unavailable": "快捷操作暂不可用：{error}",
+    "home.system_status.title": "🖥️ 系统状态",
+    "home.system_status.data_updated": "数据更新时间",
+    "home.system_status.latest_run": "最新 Run",
+    "home.system_status.data_integrity": "数据完整性",
+    "home.system_status.system_health": "系统健康",
+    "home.system_status.healthy": "🟢 健康",
+    "home.system_status.error": "🔴 异常",
+    "home.system_status.unknown": "🟡 未知",
+
+    "home.portfolio_snapshot.title": "📌 组合快照",
+    "home.portfolio_snapshot.no_run_selected": "尚未选择 Run。",
+    "home.portfolio_snapshot.equity_unavailable": "{run_id}: 净值曲线不可用，已跳过图表",
+
+    "home.recent_runs.title": "🕘 最近 Runs",
+    "home.recent_runs.run_id": "Run ID",
+    "home.recent_runs.open_detail": "打开详情",
+    "home.recent_runs.add_to_compare": "加入对比",
+    "home.recent_runs.added_to_compare": "已加入对比：{run_id}",
+    "home.recent_runs.already_in_compare": "已在对比篮子中：{run_id}",
+
+    "home.data_health.title": "🧪 数据健康",
+
+    "home.quick_actions.title": "⚡ 快捷操作",
+    "home.quick_actions.view_runs": "查看 Runs",
+    "home.quick_actions.compare_runs": "对比 Runs",
+    "home.quick_actions.update_all": "更新全部",
+    "home.quick_actions.force_update_status": "强制全量（侧栏）：{state}",
 
     "runs.subtitle": "快速筛选并进入实验详情",
     "runs.kpi_section": "核心指标",
