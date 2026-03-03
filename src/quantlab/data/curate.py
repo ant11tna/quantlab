@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 import pandas as pd
 from loguru import logger
@@ -144,85 +144,59 @@ class CuratedDataBuilder:
         
         return "unknown"
     
+    def _build_one(self, csv_path: Path, symbol: str, validate: bool = True) -> Path:
+        """Build one curated parquet from one raw CSV."""
+        source_type = self._extract_source_type(csv_path)
+        logger.info(f"Building curated data for {symbol} from {csv_path}")
+
+        df = pd.read_csv(csv_path)
+        if df.empty:
+            raise ValueError(f"Empty CSV file: {csv_path}")
+
+        df = self._normalize_columns(df)
+        if "symbol" not in df.columns:
+            df["symbol"] = symbol
+
+        df = apply_curated_transforms(df)
+
+        if validate:
+            is_valid, issues = validate_bars_df(df, required_schema="curated_v1")
+            if not is_valid:
+                raise ValueError(f"Validation failed for {symbol}: {issues}")
+
+        out_subdir = self.out_dir / source_type
+        out_subdir.mkdir(parents=True, exist_ok=True)
+
+        safe_name = symbol.replace(":", "_")
+        parquet_path = out_subdir / f"{safe_name}.parquet"
+
+        df.to_parquet(parquet_path, compression="zstd", index=False)
+        logger.info(f"Saved {len(df)} rows to {parquet_path}")
+
+        self.built_symbols[symbol] = {
+            "file": str(parquet_path.relative_to(self.out_dir.parent)),
+            "source_type": source_type,
+            "rows": len(df),
+            "start_ts": df["ts"].min(),
+            "end_ts": df["ts"].max(),
+            "columns": list(df.columns),
+        }
+        return parquet_path
+
     def build_symbol(
         self,
         csv_path: Path,
         output_symbol: Optional[str] = None,
         validate: bool = True
     ) -> Optional[Path]:
-        """Build curated parquet from a single CSV file.
-        
-        Args:
-            csv_path: Path to input CSV file
-            output_symbol: Optional output symbol name (default: extracted from filename)
-            validate: Whether to validate output against schema
-            
-        Returns:
-            Path to output parquet file, or None if failed
-        """
+        """Build curated parquet from a single CSV file."""
         if not csv_path.exists():
             logger.error(f"CSV file not found: {csv_path}")
             return None
-        
+
         symbol = output_symbol or self._extract_symbol_from_path(csv_path)
-        source_type = self._extract_source_type(csv_path)
-        
-        logger.info(f"Building curated data for {symbol} from {csv_path}")
-        
         try:
-            # Read CSV
-            df = pd.read_csv(csv_path)
-            
-            if df.empty:
-                logger.warning(f"Empty CSV file: {csv_path}")
-                return None
-            
-            # Normalize columns
-            df = self._normalize_columns(df)
-            
-            # Ensure symbol column exists
-            if "symbol" not in df.columns:
-                df["symbol"] = symbol
-            
-            # Apply curated transforms (adds regime fields)
-            df = apply_curated_transforms(df)
-            
-            # Validate if requested
-            if validate:
-                is_valid, issues = validate_bars_df(df, required_schema="curated_v1")
-                if not is_valid:
-                    logger.error(f"Validation failed for {symbol}: {issues}")
-                    return None
-            
-            # Determine output path
-            out_subdir = self.out_dir / source_type
-            out_subdir.mkdir(parents=True, exist_ok=True)
-            
-            # Sanitize filename
-            safe_name = symbol.replace(":", "_")
-            parquet_path = out_subdir / f"{safe_name}.parquet"
-            
-            # Write parquet with zstd compression
-            df.to_parquet(
-                parquet_path,
-                compression="zstd",
-                index=False
-            )
-            
-            logger.info(f"Saved {len(df)} rows to {parquet_path}")
-            
-            # Track for index
-            self.built_symbols[symbol] = {
-                "file": str(parquet_path.relative_to(self.out_dir.parent)),
-                "source_type": source_type,
-                "rows": len(df),
-                "start_ts": df["ts"].min(),
-                "end_ts": df["ts"].max(),
-                "columns": list(df.columns),
-            }
-            
-            return parquet_path
-            
+            return self._build_one(csv_path, symbol, validate=validate)
         except Exception as e:
             logger.error(f"Failed to build {symbol}: {e}")
             return None
@@ -260,38 +234,59 @@ class CuratedDataBuilder:
         
         return df
     
-    def build_all(self, validate: bool = True) -> Dict[str, Path]:
-        """Build curated data for all CSV files.
-        
-        Args:
-            validate: Whether to validate outputs
-            
-        Returns:
-            Dict mapping symbol -> parquet path
-        """
+    def build_all_iter(self, validate: bool = True) -> Iterator[Dict]:
+        """Build curated data for all CSV files and yield progress events."""
         if not self.raw_dir.exists():
             raise FileNotFoundError(f"Input directory not found: {self.raw_dir}")
 
         csv_files = self._find_csv_files()
-        
         if not csv_files:
             logger.warning(f"No CSV files found in {self.raw_dir}")
-            return {}
-        
+            yield {"type": "done", "stage": "curated", "ok": True, "done": 0, "total": 0}
+            return
+
         logger.info(f"Found {len(csv_files)} CSV files to process")
-        
-        results = {}
+        total = len(csv_files)
+        done = 0
+        errors = 0
+
         for csv_path in csv_files:
-            parquet_path = self.build_symbol(csv_path, validate=validate)
-            if parquet_path:
-                symbol = self._extract_symbol_from_path(csv_path)
-                results[symbol] = parquet_path
-        
-        # Write index file
+            symbol = self._extract_symbol_from_path(csv_path)
+            ok = True
+            try:
+                self._build_one(csv_path, symbol=symbol, validate=validate)
+            except Exception as e:
+                ok = False
+                errors += 1
+                logger.error(f"Failed to build {symbol}: {e}")
+                yield {"type": "error", "stage": "curated", "symbol": symbol, "message": str(e)}
+            finally:
+                done += 1
+                yield {
+                    "type": "progress",
+                    "stage": "curated",
+                    "done": done,
+                    "total": total,
+                    "symbol": symbol,
+                    "ok": ok,
+                }
+
         if self.built_symbols:
             self._write_index()
-        
-        logger.info(f"Built {len(results)} curated files")
+
+        logger.info(f"Built {len(self.built_symbols)} curated files")
+        yield {"type": "done", "stage": "curated", "ok": errors == 0, "done": done, "total": total}
+
+    def build_all(self, validate: bool = True) -> Dict[str, Path]:
+        """Build curated data for all CSV files."""
+        for _ in self.build_all_iter(validate=validate):
+            pass
+
+        results: Dict[str, Path] = {}
+        for symbol, meta in self.built_symbols.items():
+            file_path = meta.get("file")
+            if file_path:
+                results[symbol] = self.out_dir.parent / file_path
         return results
     
     def _write_index(self):

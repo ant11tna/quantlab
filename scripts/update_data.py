@@ -27,6 +27,11 @@ except ImportError:
     raise ImportError("akshare is required. Install with: pip install akshare")
 
 # Setup logging
+def emit(obj: Dict):
+    """Emit structured event as JSON line to stdout."""
+    print(json.dumps(obj, ensure_ascii=False), flush=True)
+
+
 def setup_logging(level: str = "INFO", log_file: Optional[str] = None):
     """Setup logging configuration."""
     logger.remove()
@@ -352,6 +357,52 @@ class AkShareDataUpdater:
 
         return max(parsed).strftime("%Y-%m-%d")
     
+    def _update_one_etf(self, symbol: str, force: bool = False) -> bool:
+        """Update a single ETF symbol."""
+        config = self.config["etf"]
+        out_dir = Path(config.get("out_dir", "data/raw/bars/etf"))
+        adjust = config.get("adjust", "qfq")
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        logger.info(f"Processing ETF: {symbol}")
+
+        internal_symbol = f"ETF:{symbol}"
+        filepath = out_dir / f"{internal_symbol}.csv"
+
+        if force or not filepath.exists():
+            start_date = "20150101"
+        else:
+            last_ts_manifest = self.manifest.get_last_ts("etf", internal_symbol)
+            df_existing = self._load_existing(filepath)
+            last_ts_file = df_existing["ts"].max() if not df_existing.empty else None
+            last_ts = self._resolve_last_ts(last_ts_manifest, last_ts_file)
+            if last_ts:
+                start_date = (datetime.strptime(last_ts, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                start_date = "20150101"
+
+        df_new = self._fetch_etf(symbol, start_date, today, adjust)
+        if df_new.empty:
+            logger.info(f"No new data for ETF:{symbol}")
+            return True
+
+        is_valid, issues = self.validator.validate(df_new, internal_symbol)
+        if not is_valid:
+            raise ValueError(f"Validation failed for ETF:{symbol}: {issues}")
+
+        df_existing = self._load_existing(filepath)
+        if not df_existing.empty:
+            df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+            df_combined = df_combined.drop_duplicates(subset=["ts"], keep="last")
+            df_combined = df_combined.sort_values("ts")
+        else:
+            df_combined = df_new
+
+        self._save_data(df_combined, filepath)
+        last_ts = df_combined["ts"].max()
+        self.manifest.update_last_ts("etf", internal_symbol, last_ts)
+        return True
+
     def update_etf(self, force: bool = False):
         """Update all configured ETFs."""
         if not self.config.get("etf", {}).get("enabled", False):
@@ -359,60 +410,57 @@ class AkShareDataUpdater:
             return
         
         config = self.config["etf"]
-        symbols = config.get("symbols", [])
-        out_dir = Path(config.get("out_dir", "data/raw/bars/etf"))
-        adjust = config.get("adjust", "qfq")
-        
-        today = datetime.now().strftime("%Y-%m-%d")
-        
-        for symbol in symbols:
-            logger.info(f"Processing ETF: {symbol}")
-            
-            internal_symbol = f"ETF:{symbol}"
-            filepath = out_dir / f"{internal_symbol}.csv"
-            
-            # Determine date range
-            if force or not filepath.exists():
-                start_date = "20150101"  # Fetch full history
-            else:
-                last_ts_manifest = self.manifest.get_last_ts("etf", internal_symbol)
-                df_existing = self._load_existing(filepath)
-                last_ts_file = df_existing["ts"].max() if not df_existing.empty else None
-                last_ts = self._resolve_last_ts(last_ts_manifest, last_ts_file)
-                if last_ts:
-                    start_date = (datetime.strptime(last_ts, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-                else:
-                    start_date = "20150101"
-            
-            # Fetch new data
-            df_new = self._fetch_etf(symbol, start_date, today, adjust)
-            
-            if df_new.empty:
-                logger.info(f"No new data for ETF:{symbol}")
-                continue
-            
-            # Validate
-            is_valid, issues = self.validator.validate(df_new, internal_symbol)
-            if not is_valid:
-                logger.error(f"Validation failed for ETF:{symbol}: {issues}")
-                continue
-            
-            # Load existing and merge
-            df_existing = self._load_existing(filepath)
-            if not df_existing.empty:
-                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                df_combined = df_combined.drop_duplicates(subset=["ts"], keep="last")
-                df_combined = df_combined.sort_values("ts")
-            else:
-                df_combined = df_new
-            
-            # Save
-            self._save_data(df_combined, filepath)
-            
-            # Update manifest
-            last_ts = df_combined["ts"].max()
-            self.manifest.update_last_ts("etf", internal_symbol, last_ts)
+        for symbol in config.get("symbols", []):
+            try:
+                self._update_one_etf(symbol, force=force)
+            except Exception as e:
+                logger.error(f"Failed ETF:{symbol}: {e}")
     
+    def _update_one_index(self, symbol: str, force: bool = False) -> bool:
+        """Update a single index symbol."""
+        config = self.config["index"]
+        out_dir = Path(config.get("out_dir", "data/raw/bars/index"))
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        logger.info(f"Processing Index: {symbol}")
+
+        internal_symbol = f"IDX:{symbol}"
+        filepath = out_dir / f"{internal_symbol}.csv"
+
+        if force or not filepath.exists():
+            start_date = "20100101"
+        else:
+            last_ts_manifest = self.manifest.get_last_ts("index", internal_symbol)
+            df_existing = self._load_existing(filepath)
+            last_ts_file = df_existing["ts"].max() if not df_existing.empty else None
+            last_ts = self._resolve_last_ts(last_ts_manifest, last_ts_file)
+            if last_ts:
+                start_date = (datetime.strptime(last_ts, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                start_date = "20100101"
+
+        df_new = self._fetch_index(symbol, start_date, today)
+        if df_new.empty:
+            logger.info(f"No new data for IDX:{symbol}")
+            return True
+
+        is_valid, issues = self.validator.validate(df_new, internal_symbol)
+        if not is_valid:
+            raise ValueError(f"Validation failed for IDX:{symbol}: {issues}")
+
+        df_existing = self._load_existing(filepath)
+        if not df_existing.empty:
+            df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+            df_combined = df_combined.drop_duplicates(subset=["ts"], keep="last")
+            df_combined = df_combined.sort_values("ts")
+        else:
+            df_combined = df_new
+
+        self._save_data(df_combined, filepath)
+        last_ts = df_combined["ts"].max()
+        self.manifest.update_last_ts("index", internal_symbol, last_ts)
+        return True
+
     def update_index(self, force: bool = False):
         """Update all configured Indices."""
         if not self.config.get("index", {}).get("enabled", False):
@@ -420,58 +468,11 @@ class AkShareDataUpdater:
             return
         
         config = self.config["index"]
-        symbols = config.get("symbols", [])
-        out_dir = Path(config.get("out_dir", "data/raw/bars/index"))
-        
-        today = datetime.now().strftime("%Y-%m-%d")
-        
-        for symbol in symbols:
-            logger.info(f"Processing Index: {symbol}")
-            
-            internal_symbol = f"IDX:{symbol}"
-            filepath = out_dir / f"{internal_symbol}.csv"
-            
-            # Determine date range
-            if force or not filepath.exists():
-                start_date = "20100101"
-            else:
-                last_ts_manifest = self.manifest.get_last_ts("index", internal_symbol)
-                df_existing = self._load_existing(filepath)
-                last_ts_file = df_existing["ts"].max() if not df_existing.empty else None
-                last_ts = self._resolve_last_ts(last_ts_manifest, last_ts_file)
-                if last_ts:
-                    start_date = (datetime.strptime(last_ts, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-                else:
-                    start_date = "20100101"
-            
-            # Fetch
-            df_new = self._fetch_index(symbol, start_date, today)
-            
-            if df_new.empty:
-                logger.info(f"No new data for IDX:{symbol}")
-                continue
-            
-            # Validate
-            is_valid, issues = self.validator.validate(df_new, internal_symbol)
-            if not is_valid:
-                logger.error(f"Validation failed for IDX:{symbol}: {issues}")
-                continue
-            
-            # Load existing and merge
-            df_existing = self._load_existing(filepath)
-            if not df_existing.empty:
-                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                df_combined = df_combined.drop_duplicates(subset=["ts"], keep="last")
-                df_combined = df_combined.sort_values("ts")
-            else:
-                df_combined = df_new
-            
-            # Save
-            self._save_data(df_combined, filepath)
-            
-            # Update manifest
-            last_ts = df_combined["ts"].max()
-            self.manifest.update_last_ts("index", internal_symbol, last_ts)
+        for symbol in config.get("symbols", []):
+            try:
+                self._update_one_index(symbol, force=force)
+            except Exception as e:
+                logger.error(f"Failed IDX:{symbol}: {e}")
     
     def update_all(self, force: bool = False):
         """Update all configured data."""
@@ -526,21 +527,50 @@ def main():
     
     updater = AkShareDataUpdater(args.config)
     
+    etf_symbols = updater.config.get("etf", {}).get("symbols", []) if args.type in ("etf", "all") else []
+    index_symbols = updater.config.get("index", {}).get("symbols", []) if args.type in ("index", "all") else []
+
+    targets: List[Tuple[str, str]] = []
     if args.symbol:
-        # Single symbol update
         if args.symbol.startswith("ETF:"):
-            updater.update_etf(force=args.force)
+            targets = [("etf", args.symbol.split(":", 1)[1])]
         elif args.symbol.startswith("IDX:"):
-            updater.update_index(force=args.force)
+            targets = [("index", args.symbol.split(":", 1)[1])]
         else:
             logger.error(f"Unknown symbol format: {args.symbol}")
             return 1
     else:
-        # Batch update
-        if args.type in ("etf", "all"):
-            updater.update_etf(force=args.force)
-        if args.type in ("index", "all"):
-            updater.update_index(force=args.force)
+        targets.extend(("etf", sym) for sym in etf_symbols)
+        targets.extend(("index", sym) for sym in index_symbols)
+
+    total_symbols = len(targets)
+    done = 0
+    raw_ok = True
+
+    for data_type, symbol in targets:
+        ok = True
+        try:
+            if data_type == "etf":
+                updater._update_one_etf(symbol, force=args.force)
+            else:
+                updater._update_one_index(symbol, force=args.force)
+        except Exception as e:
+            ok = False
+            raw_ok = False
+            emit({"type": "error", "stage": "raw", "symbol": symbol, "message": str(e)})
+            logger.error(f"Failed to process {data_type}:{symbol}: {e}")
+        finally:
+            done += 1
+            emit({
+                "type": "progress",
+                "stage": "raw",
+                "done": done,
+                "total": total_symbols,
+                "symbol": symbol,
+                "ok": ok,
+            })
+
+    emit({"type": "done", "stage": "raw", "ok": raw_ok, "done": done, "total": total_symbols})
 
     # Fail only when nothing was updated and no local data exists at all.
     if updater.updated_files == 0 and not updater._has_any_raw_data(args.type):
