@@ -39,17 +39,17 @@ with st.sidebar:
         _run_update_stream_ui(force_update_all, sidebar=True)
 
 # Dashboard main area
-st.title("QuantLab Research Terminal")
+st.title(t("home.title"))
 
 try:
     render_system_status()
 except Exception as exc:
-    st.warning(f"system status unavailable: {exc}")
+    st.warning(t("home.system_status_unavailable", error=exc))
 
 try:
     runs_df = list_runs()
 except Exception as exc:
-    st.warning(f"runs scan failed: {exc}")
+    st.warning(t("home.runs_scan_failed", error=exc))
     runs_df = None
 
 if runs_df is None:
@@ -69,19 +69,19 @@ if latest_run_id:
 try:
     render_portfolio_snapshot(latest_run_id or "")
 except Exception as exc:
-    st.warning(f"portfolio snapshot unavailable: {exc}")
+    st.warning(t("home.portfolio_snapshot_unavailable", error=exc))
 
 try:
     render_recent_runs_table(runs_df)
 except Exception as exc:
-    st.warning(f"recent runs table unavailable: {exc}")
+    st.warning(t("home.recent_runs_table_unavailable", error=exc))
 
 try:
     render_data_health()
 except Exception as exc:
-    st.warning(f"data health unavailable: {exc}")
+    st.warning(t("home.data_health_unavailable", error=exc))
 
 try:
     render_quick_actions()
 except Exception as exc:
-    st.warning(f"quick actions unavailable: {exc}")
+    st.warning(t("home.quick_actions_unavailable", error=exc))
