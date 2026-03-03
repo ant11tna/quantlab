@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterator
@@ -40,13 +42,57 @@ def update_all_stream(force: bool = False, config_path: str = "config/data_sourc
             cwd=str(repo_root),
             env=env,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # Merge stderr into stdout to avoid deadlocks when updater logs heavily
+            # via stderr (default logger sink) while UI is only streaming stdout.
+            stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
         )
 
         assert proc.stdout is not None
-        for line in proc.stdout:
+        yield {
+            "type": "start",
+            "stage": "raw",
+            "pid": proc.pid,
+            "cmd": " ".join(cmd),
+        }
+
+        line_queue: queue.Queue[str | None] = queue.Queue()
+
+        def _drain_stdout() -> None:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line_queue.put(line)
+            line_queue.put(None)
+
+        reader = threading.Thread(target=_drain_stdout, daemon=True)
+        reader.start()
+
+        heartbeat_interval = 2.0
+        started_at = time.time()
+        last_heartbeat = 0.0
+
+        while True:
+            try:
+                line = line_queue.get(timeout=0.5)
+            except queue.Empty:
+                if proc.poll() is None:
+                    now = time.time()
+                    if now - last_heartbeat >= heartbeat_interval:
+                        last_heartbeat = now
+                        yield {
+                            "type": "heartbeat",
+                            "stage": "raw",
+                            "pid": proc.pid,
+                            "elapsed": round(now - started_at, 1),
+                        }
+                elif not reader.is_alive():
+                    break
+                continue
+
+            if line is None:
+                break
+
             payload = line.strip()
             if not payload:
                 continue
@@ -63,16 +109,15 @@ def update_all_stream(force: bool = False, config_path: str = "config/data_sourc
                 raw_ok = bool(ev.get("ok", raw_ok))
             yield ev
 
-        stderr_text = ""
-        if proc.stderr is not None:
-            stderr_text = proc.stderr.read().strip()
+        reader.join(timeout=1.0)
+
         rc = proc.wait()
         if rc != 0:
             raw_ok = False
             yield {
                 "type": "error",
                 "stage": "raw",
-                "message": f"update_data exited with code {rc}" + (f" | {stderr_text[:400]}" if stderr_text else ""),
+                "message": f"update_data exited with code {rc}",
             }
             raw_error_count += 1
     except Exception as e:
