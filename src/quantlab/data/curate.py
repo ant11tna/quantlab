@@ -160,9 +160,11 @@ class CuratedDataBuilder:
         df = apply_curated_transforms(df)
 
         if validate:
-            is_valid, issues = validate_bars_df(df, required_schema="curated_v1")
-            if not is_valid:
-                raise ValueError(f"Validation failed for {symbol}: {issues}")
+            is_valid, schema_version, message = validate_bars_df(df, strict=True)
+            if (not is_valid) or (schema_version != SCHEMA_CURATED_V1):
+                raise ValueError(
+                    f"Validation failed for {symbol}: {schema_version} - {message}"
+                )
 
         out_subdir = self.out_dir / source_type
         out_subdir.mkdir(parents=True, exist_ok=True)
