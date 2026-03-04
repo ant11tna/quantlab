@@ -72,7 +72,11 @@ def _save_editor_rows(editor_df: pd.DataFrame) -> None:
 
     rows["listing_id"] = rows["listing_id"].astype(str).str.strip()
     rows = rows[rows["listing_id"] != ""].copy()
-    rows["target_weight"] = pd.to_numeric(rows["target_weight"], errors="coerce").fillna(0.0)
+    if "target_weight_pct" in rows.columns:
+        rows["target_weight_pct"] = pd.to_numeric(rows["target_weight_pct"], errors="coerce").fillna(0.0)
+        rows["target_weight"] = rows["target_weight_pct"] / 100.0
+    else:
+        rows["target_weight"] = pd.to_numeric(rows["target_weight"], errors="coerce").fillna(0.0)
 
     existing = portfolio_store.load_targets()
     keep = ~(
@@ -132,14 +136,18 @@ with left:
 
     if decorated.empty:
         st.info("该 effective_date 下暂无持仓。")
-        editable_df = pd.DataFrame(columns=["listing_id", "target_weight"])
+        editable_df = pd.DataFrame(columns=["listing_id", "target_weight_pct"])
     else:
+        decorated["target_weight_pct"] = pd.to_numeric(decorated["target_weight"], errors="coerce").fillna(0.0) * 100.0
         st.dataframe(
-            decorated[["region", "exchange", "ticker", "name", "target_weight", "listing_id"]],
+            decorated[["region", "exchange", "ticker", "name", "target_weight_pct", "listing_id"]],
             use_container_width=True,
             hide_index=True,
+            column_config={
+                "target_weight_pct": st.column_config.NumberColumn("target_weight_pct", format="%.2f%%"),
+            },
         )
-        editable_df = decorated[["listing_id", "target_weight"]].copy()
+        editable_df = decorated[["listing_id", "target_weight_pct"]].copy()
 
     edited = st.data_editor(
         editable_df,
@@ -149,7 +157,13 @@ with left:
         key="portfolio_targets_editor",
         column_config={
             "listing_id": st.column_config.TextColumn("listing_id"),
-            "target_weight": st.column_config.NumberColumn("target_weight", min_value=0.0, max_value=1.0, step=0.001, format="%.6f"),
+            "target_weight_pct": st.column_config.NumberColumn(
+                "target_weight_pct",
+                min_value=0.0,
+                max_value=100.0,
+                step=0.1,
+                format="%.2f%%",
+            ),
         },
     )
 
@@ -160,8 +174,13 @@ with left:
         st.rerun()
 
     if c2.button("归一化权重", use_container_width=True):
-        normalized = normalize_weights(edited)
-        _save_editor_rows(normalized)
+        edited_for_normalize = edited.copy()
+        edited_for_normalize["target_weight"] = pd.to_numeric(
+            edited_for_normalize["target_weight_pct"], errors="coerce"
+        ).fillna(0.0) / 100.0
+        normalized = normalize_weights(edited_for_normalize[["listing_id", "target_weight"]])
+        normalized["target_weight_pct"] = pd.to_numeric(normalized["target_weight"], errors="coerce").fillna(0.0) * 100.0
+        _save_editor_rows(normalized[["listing_id", "target_weight_pct"]])
         st.success("已归一化并保存。")
         st.rerun()
 
@@ -171,8 +190,10 @@ with left:
         st.success(f"已删除: {delete_listing_id.strip()}")
         st.rerun()
 
-    total, is_close, message = validate_weights(edited)
-    st.write(f"权重合计: {total:.6f}")
+    edited_for_validate = edited.copy()
+    edited_for_validate["target_weight"] = pd.to_numeric(edited_for_validate["target_weight_pct"], errors="coerce").fillna(0.0) / 100.0
+    total, is_close, message = validate_weights(edited_for_validate[["target_weight"]])
+    st.write(f"权重合计: {total:.6f}（合计 {total * 100:.2f}%）")
     if total == 0:
         st.info(message)
     elif is_close:
@@ -187,30 +208,26 @@ with right:
         st.info("暂无组合数据。")
     else:
         chart_df["target_weight"] = pd.to_numeric(chart_df["target_weight"], errors="coerce").fillna(0.0)
+        chart_df["target_weight_pct"] = chart_df["target_weight"] * 100.0
         total, is_close, _ = validate_weights(chart_df[["target_weight"]])
         if total == 0:
-            st.info("请填写权重")
+            st.info("请填写权重（当前全部为 0%）。")
         else:
             if not is_close:
-                st.warning(f"当前权重合计 {total:.6f}，未接近 1.0，仍可查看分布。")
+                st.warning(f"当前权重合计 {total:.6f}（{total * 100:.2f}%），未接近 1.0，仍可查看分布。")
             name_candidate = chart_df["name"].astype(str).str.strip()
             ticker_candidate = chart_df["ticker"].astype(str).str.strip()
             listing_candidate = chart_df["listing_id"].astype(str).str.strip()
+            name_missing = name_candidate.isin(["", "(name unknown)", "(unknown listing)"])
+            ticker_missing = ticker_candidate.isin(["", "(ticker unknown)", "(unknown listing)"])
             chart_df["display_name"] = name_candidate
-            chart_df.loc[
-                chart_df["display_name"].isin(["", "(name unknown)", "(unknown listing)"]),
-                "display_name",
-            ] = ticker_candidate
-            chart_df.loc[
-                chart_df["display_name"].isin(["", "(unknown listing)"]),
-                "display_name",
-            ] = listing_candidate
-            chart_df["weight_pct"] = chart_df["target_weight"] * 100.0
+            chart_df.loc[name_missing, "display_name"] = ticker_candidate
+            chart_df.loc[name_missing & ticker_missing, "display_name"] = listing_candidate
             fig = px.pie(
                 chart_df,
-                values="weight_pct",
+                values="target_weight_pct",
                 names="display_name",
-                hover_data=["listing_id", "target_weight", "region", "exchange", "ticker"],
+                hover_data=["listing_id", "target_weight", "target_weight_pct", "region", "exchange", "ticker"],
                 title=f"{DEFAULT_PORTFOLIO_ID} @ {effective_date}",
             )
             st.plotly_chart(fig, use_container_width=True)
