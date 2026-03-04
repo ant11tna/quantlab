@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import ui.bootstrap  # noqa: F401
 
@@ -9,6 +9,8 @@ import plotly.express as px
 import streamlit as st
 
 from ui.components import symbol_search_pro_component
+from quantlab.market.coverage import compute_portfolio_coverage
+from quantlab.market.store import MarketStore
 from quantlab.portfolio import PortfolioStore, enrich_targets_with_universe, normalize_weights, validate_weights
 from quantlab.universe import resolver
 from quantlab.universe.store import UniverseStore
@@ -21,6 +23,7 @@ st.set_page_config(page_title="Portfolio Builder", page_icon="🧩", layout="wid
 st.title("Portfolio Builder")
 
 portfolio_store = PortfolioStore(base_dir="data/portfolio")
+market_store = MarketStore(base_dir="data/market", universe_dir="data/universe")
 universe_store = UniverseStore(base_dir="data/universe")
 portfolio_store.ensure_default_portfolio(
     portfolio_id=DEFAULT_PORTFOLIO_ID,
@@ -211,3 +214,70 @@ with right:
                 title=f"{DEFAULT_PORTFOLIO_ID} @ {effective_date}",
             )
             st.plotly_chart(fig, use_container_width=True)
+
+
+    st.markdown("---")
+    st.subheader("数据覆盖 / 缺口（Slice 2）")
+
+    default_start = selected_effective_date - timedelta(days=180)
+    default_end = datetime.now(timezone.utc).date()
+    cov_col1, cov_col2 = st.columns(2)
+    coverage_start_date = cov_col1.date_input(
+        "coverage start",
+        value=default_start,
+        key="coverage_start_date",
+    )
+    coverage_end_date = cov_col2.date_input(
+        "coverage end",
+        value=default_end,
+        key="coverage_end_date",
+    )
+
+    if coverage_start_date > coverage_end_date:
+        st.warning("开始日期不能晚于结束日期。")
+    else:
+        if st.button("检查数据覆盖", use_container_width=True):
+            coverage_df = compute_portfolio_coverage(
+                portfolio_id=DEFAULT_PORTFOLIO_ID,
+                effective_date=effective_date,
+                portfolio_store=portfolio_store,
+                market_store=market_store,
+                start=coverage_start_date.isoformat(),
+                end=coverage_end_date.isoformat(),
+                freq="1d",
+            )
+            st.session_state["portfolio_coverage_df"] = coverage_df
+
+        coverage_df = st.session_state.get("portfolio_coverage_df")
+        if isinstance(coverage_df, pd.DataFrame) and not coverage_df.empty:
+            display_cols = [
+                "listing_id",
+                "region",
+                "exchange",
+                "min_ts",
+                "max_ts",
+                "gap_type",
+                "gap_start",
+                "gap_end",
+                "status",
+            ]
+            view = coverage_df[display_cols].copy()
+            st.dataframe(view, use_container_width=True, hide_index=True)
+
+            status_missing = coverage_df["status"].astype(str).eq("missing")
+            gap_type = coverage_df["gap_type"].astype(str)
+            missing_count = int(status_missing.sum())
+            head_gap_count = int(gap_type.str.contains("missing_head", na=False).sum())
+            tail_gap_count = int(gap_type.str.contains("missing_tail", na=False).sum())
+            has_gap = missing_count > 0 or (gap_type != "none").any()
+
+            if has_gap:
+                st.warning(
+                    f"发现覆盖缺口：missing={missing_count}, head_gap={head_gap_count}, tail_gap={tail_gap_count}"
+                )
+            else:
+                st.success("所选区间内，所有持仓均有边界覆盖。")
+        elif isinstance(coverage_df, pd.DataFrame):
+            st.info("当前 effective_date 下暂无持仓，无需检查覆盖。")
+
+        st.caption("说明：Slice 2 仅基于 metadata.min_ts/max_ts 检查边界缺口，middle gaps not checked in Slice2。")

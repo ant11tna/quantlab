@@ -154,6 +154,7 @@ def main():
     print(f"  Metadata entries: {len(metadata)}")
     for _, row in metadata.iterrows():
         print(f"    - {row['listing_id']}: {row['min_ts'].date()} to {row['max_ts'].date()}")
+        print(f"      last_updated_at: {row['last_updated_at']}")
     
     # Step 5: Show directory structure
     print("\n[Step 5] Curated data structure:")
