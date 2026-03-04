@@ -340,10 +340,10 @@ class MarketStore:
         if not dfs:
             return schema_empty_df(CURATED_SCHEMA)
         
-        # Concat and sort
+        # Concat and dedupe across all parts
         result = pd.concat(dfs, ignore_index=True)
-        result = result.sort_values(["ts", "listing_id"])
-        
+        result = result.drop_duplicates(subset=["listing_id", "ts"], keep="last")
+
         # Select fields if specified
         if fields is not None:
             available_cols = set(result.columns)
@@ -351,5 +351,7 @@ class MarketStore:
                 f for f in fields if f in available_cols
             ]
             result = result[[col for col in select_cols if col in result.columns]]
-        
+
+        result = result.sort_values(["ts", "listing_id"])
+
         return result.reset_index(drop=True)

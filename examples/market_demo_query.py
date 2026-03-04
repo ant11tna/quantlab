@@ -77,6 +77,16 @@ def main():
     # Date range
     print(f"\nDate range: {df['ts'].min().date()} to {df['ts'].max().date()}")
     
+    # Duplicate check by listing_id on ts
+    print("\nDuplicate count by listing (same ts):")
+    dup_counts = (
+        df.groupby(["listing_id", "ts"]).size().sub(1).clip(lower=0)
+        .groupby("listing_id").sum()
+    )
+    dup_counts = dup_counts.reindex(target_listings, fill_value=0).astype(int)
+    for listing_id, dup_count in dup_counts.items():
+        print(f"  {listing_id}: {dup_count}")
+
     # Sample data
     print("\nFirst 5 rows:")
     print(df.head().to_string(index=False))
