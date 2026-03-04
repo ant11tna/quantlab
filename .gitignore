@@ -112,3 +112,11 @@ temp/
 node_modules/
 dist/
 build/
+
+# analytics / market data
+data/market/
+data/portfolio/
+data/universe/
+data/analytics/
+
+*.parquet
