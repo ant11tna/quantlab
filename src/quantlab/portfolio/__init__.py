@@ -6,7 +6,7 @@ from .types import (
     PORTFOLIO_COLUMNS,
     TARGET_COLUMNS,
 )
-from .utils import normalize_weights, validate_weights
+from .utils import enrich_targets_with_universe, normalize_weights, validate_weights
 
 __all__ = [
     "PortfolioStore",
@@ -17,4 +17,5 @@ __all__ = [
     "DEFAULT_BASE_CURRENCY",
     "validate_weights",
     "normalize_weights",
+    "enrich_targets_with_universe",
 ]

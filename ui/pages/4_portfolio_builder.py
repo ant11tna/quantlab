@@ -9,7 +9,7 @@ import plotly.express as px
 import streamlit as st
 
 from ui.components import symbol_search_pro_component
-from quantlab.portfolio import PortfolioStore, normalize_weights, validate_weights
+from quantlab.portfolio import PortfolioStore, enrich_targets_with_universe, normalize_weights, validate_weights
 from quantlab.universe import resolver
 from quantlab.universe.store import UniverseStore
 from quantlab.universe.types import Candidate
@@ -53,30 +53,7 @@ def _current_targets() -> pd.DataFrame:
 
 
 def _decorate_with_universe(df: pd.DataFrame) -> pd.DataFrame:
-    listings = universe_store.load_listings()
-    instruments = universe_store.load_instruments()
-    out = df.copy()
-
-    if listings.empty:
-        out["region"] = ""
-        out["exchange"] = ""
-        out["ticker"] = ""
-        out["name"] = "(name unknown)"
-        return out
-
-    merged = out.merge(
-        listings[["listing_id", "instrument_id", "region", "exchange", "ticker"]],
-        how="left",
-        on="listing_id",
-    )
-    if instruments.empty:
-        merged["name"] = "(name unknown)"
-    else:
-        merged = merged.merge(instruments[["instrument_id", "name"]], how="left", on="instrument_id")
-        merged["name"] = merged["name"].fillna("").astype(str).str.strip()
-        merged.loc[merged["name"] == "", "name"] = "(name unknown)"
-
-    return merged
+    return enrich_targets_with_universe(df)
 
 
 def _save_editor_rows(editor_df: pd.DataFrame) -> None:
@@ -213,9 +190,18 @@ with right:
         else:
             if not is_close:
                 st.warning(f"当前权重合计 {total:.6f}，未接近 1.0，仍可查看分布。")
-            chart_df["display_name"] = chart_df["name"]
-            chart_df.loc[chart_df["display_name"] == "(name unknown)", "display_name"] = chart_df["ticker"].fillna("")
-            chart_df.loc[chart_df["display_name"].astype(str).str.strip() == "", "display_name"] = "(name unknown)"
+            name_candidate = chart_df["name"].astype(str).str.strip()
+            ticker_candidate = chart_df["ticker"].astype(str).str.strip()
+            listing_candidate = chart_df["listing_id"].astype(str).str.strip()
+            chart_df["display_name"] = name_candidate
+            chart_df.loc[
+                chart_df["display_name"].isin(["", "(name unknown)", "(unknown listing)"]),
+                "display_name",
+            ] = ticker_candidate
+            chart_df.loc[
+                chart_df["display_name"].isin(["", "(unknown listing)"]),
+                "display_name",
+            ] = listing_candidate
             chart_df["weight_pct"] = chart_df["target_weight"] * 100.0
             fig = px.pie(
                 chart_df,
