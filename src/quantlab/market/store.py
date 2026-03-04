@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-import numpy as np
 from loguru import logger
 
 from .types import (
@@ -182,8 +181,8 @@ class MarketStore:
         info = self.get_listing_info(listing_id)
         now = now_utc_iso()
         
-        # Check if listing already exists in metadata
-        mask = metadata["listing_id"] == listing_id
+        # Check if listing+freq already exists in metadata
+        mask = (metadata["listing_id"].astype(str) == str(listing_id)) & (metadata["freq"].astype(str) == str(freq))
         
         if mask.any():
             # Update existing entry
@@ -191,12 +190,15 @@ class MarketStore:
             old_min = metadata.at[idx, "min_ts"]
             old_max = metadata.at[idx, "max_ts"]
             
-            # Merge timestamps
-            metadata.at[idx, "min_ts"] = min(old_min, new_min_ts)
-            metadata.at[idx, "max_ts"] = max(old_max, new_max_ts)
+            # Merge timestamps, preserving existing coverage if present
+            old_min = pd.to_datetime(old_min, errors="coerce")
+            old_max = pd.to_datetime(old_max, errors="coerce")
+            metadata.at[idx, "min_ts"] = min(old_min, new_min_ts) if pd.notna(old_min) else new_min_ts
+            metadata.at[idx, "max_ts"] = max(old_max, new_max_ts) if pd.notna(old_max) else new_max_ts
             metadata.at[idx, "last_updated_at"] = now
             metadata.at[idx, "status"] = "ok"
             metadata.at[idx, "freq"] = freq
+            metadata.at[idx, "provider"] = provider
         else:
             # Create new entry
             entry = MetadataEntry(

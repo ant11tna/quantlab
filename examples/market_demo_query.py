@@ -122,6 +122,8 @@ def main():
             else:
                 print(f"  {rel_path}/")
     
+    print("说明: last_updated_at 会在每次 seed 写入时刷新；query 仅查询不会刷新。")
+
     print("\n" + "=" * 70)
     print("Query complete!")
     print("=" * 70)
