@@ -11,6 +11,7 @@ import streamlit as st
 from ui.components import symbol_search_pro_component
 from quantlab.market.coverage import compute_portfolio_coverage
 from quantlab.market.store import MarketStore
+from quantlab.portfolio.exposure import compute_concentration, compute_exposure
 from quantlab.portfolio import PortfolioStore, enrich_targets_with_universe, normalize_weights, validate_weights
 from quantlab.universe import resolver
 from quantlab.universe.store import UniverseStore
@@ -57,6 +58,48 @@ def _current_targets() -> pd.DataFrame:
 
 def _decorate_with_universe(df: pd.DataFrame) -> pd.DataFrame:
     return enrich_targets_with_universe(df)
+
+
+def _decorate_for_exposure(df: pd.DataFrame) -> pd.DataFrame:
+    out = _decorate_with_universe(df)
+    if out.empty:
+        return out
+
+    listings = universe_store.load_listings()
+    instruments = universe_store.load_instruments()
+
+    if "currency" not in out.columns:
+        out["currency"] = ""
+    if not listings.empty:
+        listing_cols = ["listing_id", "currency"]
+        for col in listing_cols:
+            if col not in listings.columns:
+                listings[col] = None
+        out = out.drop(columns=["currency"], errors="ignore").merge(listings[listing_cols], how="left", on="listing_id")
+
+    if "asset_type" not in out.columns:
+        out["asset_type"] = ""
+    if not instruments.empty:
+        instrument_cols = ["instrument_id", "asset_type"]
+        for col in instrument_cols:
+            if col not in instruments.columns:
+                instruments[col] = None
+        out = out.drop(columns=["asset_type"], errors="ignore").merge(
+            instruments[instrument_cols], how="left", on="instrument_id"
+        )
+
+    for col in ["region", "exchange", "ticker", "name", "asset_type", "currency"]:
+        if col not in out.columns:
+            out[col] = "unknown"
+        cleaned = out[col].fillna("").astype(str).str.strip()
+        out[col] = cleaned.where(cleaned != "", "unknown")
+    return out
+
+
+def _format_exposure_table(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["weight_pct"] = pd.to_numeric(out["weight_pct"], errors="coerce").fillna(0.0).map(lambda x: f"{x:.2f}%")
+    return out
 
 
 def _save_editor_rows(editor_df: pd.DataFrame) -> None:
@@ -232,6 +275,40 @@ with right:
             )
             st.plotly_chart(fig, use_container_width=True)
 
+
+    st.markdown("---")
+    st.subheader("组合暴露（Exposure）")
+
+    exposure_df = _decorate_for_exposure(_current_targets())
+    if exposure_df.empty:
+        st.info("当前 effective_date 下暂无持仓，无法计算 Exposure。")
+    else:
+        exposure_df["target_weight"] = pd.to_numeric(exposure_df["target_weight"], errors="coerce").fillna(0.0)
+        exposure_total = float(exposure_df["target_weight"].sum())
+        if exposure_total <= 0:
+            st.info("当前 targets 合计为 0，请先填写权重后再查看 Exposure。")
+        else:
+            region_exposure = compute_exposure(exposure_df, ["region"])
+            asset_type_exposure = compute_exposure(exposure_df, ["asset_type"])
+            currency_exposure = compute_exposure(exposure_df, ["currency"])
+            concentration = compute_concentration(exposure_df)
+
+            ex_col1, ex_col2, ex_col3 = st.columns(3)
+            with ex_col1:
+                st.caption("Region Exposure")
+                st.dataframe(_format_exposure_table(region_exposure), use_container_width=True, hide_index=True)
+            with ex_col2:
+                st.caption("Asset Type Exposure")
+                st.dataframe(_format_exposure_table(asset_type_exposure), use_container_width=True, hide_index=True)
+            with ex_col3:
+                st.caption("Currency Exposure")
+                st.dataframe(_format_exposure_table(currency_exposure), use_container_width=True, hide_index=True)
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Top1", f"{concentration['top1_pct']:.2f}%")
+            m2.metric("Top3", f"{concentration['top3_pct']:.2f}%")
+            m3.metric("Top5", f"{concentration['top5_pct']:.2f}%")
+            m4.metric("HHI", f"{concentration['hhi']:.4f}")
 
     st.markdown("---")
     st.subheader("数据覆盖 / 缺口（Slice 2）")
