@@ -44,6 +44,13 @@ if errorlevel 1 (echo   [FAIL] streamlit) else (
     )
 )
 
+python -c "import plotly" >nul 2>&1
+if errorlevel 1 (echo   [FAIL] plotly) else (
+    for /f "tokens=2" %%a in ('python -c "import plotly; print(plotly.__version__)" 2^>^&1') do (
+        echo   [PASS] plotly %%a
+    )
+)
+
 python -c "import yaml" >nul 2>&1
 if errorlevel 1 (echo   [FAIL] pyyaml) else (echo   [PASS] pyyaml)
 
