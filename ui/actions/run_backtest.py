@@ -15,7 +15,8 @@ def find_repo_root(start: Path | None = None) -> Path:
             return directory
         if (directory / ".git").exists():
             return directory
-        if (directory / "README.md").exists():
+        # Avoid treating nested docs folders (e.g. ``ui/README.md``) as repo root.
+        if (directory / "README.md").exists() and (directory / "src").exists():
             return directory
 
     # Fallback: if markers are missing, assume this file lives in <repo>/ui/actions/.
