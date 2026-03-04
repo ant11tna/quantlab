@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from datetime import datetime, timezone
 
 import ui.bootstrap  # noqa: F401
 
@@ -8,68 +8,220 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from components import symbol_search_pro_component
+from ui.components import symbol_search_pro_component
+from quantlab.portfolio import PortfolioStore, normalize_weights, validate_weights
+from quantlab.universe import resolver
 from quantlab.universe.store import UniverseStore
+from quantlab.universe.types import Candidate
 
-PORTFOLIO_PATH = Path("data/portfolio/holdings.parquet")
+DEFAULT_PORTFOLIO_ID = "default"
 
 
 st.set_page_config(page_title="Portfolio Builder", page_icon="🧩", layout="wide")
 st.title("Portfolio Builder")
 
-store = UniverseStore(base_dir="data/universe")
+portfolio_store = PortfolioStore(base_dir="data/portfolio")
+universe_store = UniverseStore(base_dir="data/universe")
+portfolio_store.ensure_default_portfolio(
+    portfolio_id=DEFAULT_PORTFOLIO_ID,
+    name="Default Portfolio",
+    base_currency="CNY",
+)
+
+active_default = portfolio_store.get_active_effective_date(DEFAULT_PORTFOLIO_ID)
+selected_effective_date = st.date_input(
+    "当前 effective_date",
+    value=pd.to_datetime(active_default).date(),
+    help="切换查看/编辑某个生效日的目标权重。",
+)
+effective_date = selected_effective_date.isoformat()
+
+
+def _current_targets() -> pd.DataFrame:
+    targets = portfolio_store.load_targets()
+    if targets.empty:
+        return pd.DataFrame(columns=["portfolio_id", "effective_date", "listing_id", "target_weight", "added_at"])
+    mask = (
+        (targets["portfolio_id"].astype(str) == DEFAULT_PORTFOLIO_ID)
+        & (targets["effective_date"].astype(str) == effective_date)
+    )
+    out = targets.loc[mask].copy()
+    if out.empty:
+        return pd.DataFrame(columns=targets.columns)
+    out["target_weight"] = pd.to_numeric(out["target_weight"], errors="coerce").fillna(0.0)
+    return out.sort_values("listing_id").reset_index(drop=True)
+
+
+def _decorate_with_universe(df: pd.DataFrame) -> pd.DataFrame:
+    listings = universe_store.load_listings()
+    instruments = universe_store.load_instruments()
+    out = df.copy()
+
+    if listings.empty:
+        out["region"] = ""
+        out["exchange"] = ""
+        out["ticker"] = ""
+        out["name"] = "(name unknown)"
+        return out
+
+    merged = out.merge(
+        listings[["listing_id", "instrument_id", "region", "exchange", "ticker"]],
+        how="left",
+        on="listing_id",
+    )
+    if instruments.empty:
+        merged["name"] = "(name unknown)"
+    else:
+        merged = merged.merge(instruments[["instrument_id", "name"]], how="left", on="instrument_id")
+        merged["name"] = merged["name"].fillna("").astype(str).str.strip()
+        merged.loc[merged["name"] == "", "name"] = "(name unknown)"
+
+    return merged
+
+
+def _save_editor_rows(editor_df: pd.DataFrame) -> None:
+    rows = editor_df.copy()
+    if rows.empty:
+        existing = portfolio_store.load_targets()
+        keep = ~(
+            (existing["portfolio_id"].astype(str) == DEFAULT_PORTFOLIO_ID)
+            & (existing["effective_date"].astype(str) == effective_date)
+        )
+        portfolio_store.save_targets(existing.loc[keep].reset_index(drop=True))
+        return
+
+    rows["listing_id"] = rows["listing_id"].astype(str).str.strip()
+    rows = rows[rows["listing_id"] != ""].copy()
+    rows["target_weight"] = pd.to_numeric(rows["target_weight"], errors="coerce").fillna(0.0)
+
+    existing = portfolio_store.load_targets()
+    keep = ~(
+        (existing["portfolio_id"].astype(str) == DEFAULT_PORTFOLIO_ID)
+        & (existing["effective_date"].astype(str) == effective_date)
+    )
+    base = existing.loc[keep].reset_index(drop=True)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_rows = []
+    for row in rows.itertuples(index=False):
+        new_rows.append(
+            {
+                "portfolio_id": DEFAULT_PORTFOLIO_ID,
+                "effective_date": effective_date,
+                "listing_id": str(row.listing_id),
+                "target_weight": float(row.target_weight),
+                "added_at": now_iso,
+            }
+        )
+    final_df = pd.concat([base, pd.DataFrame(new_rows)], ignore_index=True)
+    final_df = final_df.drop_duplicates(subset=["portfolio_id", "effective_date", "listing_id"], keep="last")
+    portfolio_store.save_targets(final_df)
+
 
 left, right = st.columns([3, 2])
 
 with left:
-    symbol_search_pro_component(store=store, portfolio_path=str(PORTFOLIO_PATH), allow_add=True)
+    st.subheader("添加持仓")
+    symbol_search_pro_component(store=universe_store, allow_add=False)
+
+    selected_candidate = st.session_state.get("symbol_search_pro_selected_candidate")
+    selected_query = str(st.session_state.get("symbol_search_pro_query", "")).strip()
+    if isinstance(selected_candidate, Candidate):
+        st.caption(f"已选择: {selected_candidate.listing_id}")
+        if st.button("确认加入组合", type="primary"):
+            try:
+                resolver.confirm(selected_query or selected_candidate.listing_id, selected_candidate, universe_store)
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                portfolio_store.upsert_target(
+                    portfolio_id=DEFAULT_PORTFOLIO_ID,
+                    effective_date=effective_date,
+                    listing_id=selected_candidate.listing_id,
+                    target_weight=0.0,
+                )
+                st.success(f"已加入: {selected_candidate.listing_id}")
+    else:
+        st.caption("请先在候选列表中选中一个标的。")
 
     st.markdown("---")
-    st.subheader("当前组合")
+    st.subheader("当前组合（可编辑）")
 
-    if PORTFOLIO_PATH.exists():
-        holdings = pd.read_parquet(PORTFOLIO_PATH, engine="pyarrow")
+    targets = _current_targets()
+    decorated = _decorate_with_universe(targets)
+
+    if decorated.empty:
+        st.info("该 effective_date 下暂无持仓。")
+        editable_df = pd.DataFrame(columns=["listing_id", "target_weight"])
     else:
-        holdings = pd.DataFrame(columns=["listing_id", "weight", "added_at"])
-
-    if holdings.empty:
-        st.info("组合为空，请先添加标的。")
-    else:
-        if "weight" not in holdings.columns:
-            holdings["weight"] = 0.0
-        editable = holdings[["listing_id", "weight", "added_at"]].copy()
-        editable["weight"] = pd.to_numeric(editable["weight"], errors="coerce").fillna(0.0)
-
-        edited = st.data_editor(
-            editable,
-            hide_index=True,
+        st.dataframe(
+            decorated[["region", "exchange", "ticker", "name", "target_weight", "listing_id"]],
             use_container_width=True,
-            key="portfolio_holdings_editor",
-            column_config={
-                "weight": st.column_config.NumberColumn("weight", min_value=0.0, step=0.01, format="%.4f")
-            },
-            disabled=["listing_id", "added_at"],
+            hide_index=True,
         )
+        editable_df = decorated[["listing_id", "target_weight"]].copy()
 
-        if st.button("保存权重", type="primary"):
-            to_save = edited.copy()
-            to_save.to_parquet(PORTFOLIO_PATH, index=False, engine="pyarrow")
-            st.success("权重已保存。")
+    edited = st.data_editor(
+        editable_df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        key="portfolio_targets_editor",
+        column_config={
+            "listing_id": st.column_config.TextColumn("listing_id"),
+            "target_weight": st.column_config.NumberColumn("target_weight", min_value=0.0, max_value=1.0, step=0.001, format="%.6f"),
+        },
+    )
+
+    c1, c2, c3 = st.columns(3)
+    if c1.button("保存编辑", use_container_width=True):
+        _save_editor_rows(edited)
+        st.success("目标权重已保存。")
+        st.rerun()
+
+    if c2.button("归一化权重", use_container_width=True):
+        normalized = normalize_weights(edited)
+        _save_editor_rows(normalized)
+        st.success("已归一化并保存。")
+        st.rerun()
+
+    delete_listing_id = c3.text_input("删除 listing_id", value="", placeholder="LISTING:CN:SH:600519")
+    if st.button("删除选中行（按 listing_id）") and delete_listing_id.strip():
+        portfolio_store.remove_target(DEFAULT_PORTFOLIO_ID, effective_date, delete_listing_id.strip())
+        st.success(f"已删除: {delete_listing_id.strip()}")
+        st.rerun()
+
+    total, is_close, message = validate_weights(edited)
+    st.write(f"权重合计: {total:.6f}")
+    if total == 0:
+        st.info(message)
+    elif is_close:
+        st.success(message)
+    else:
+        st.warning(message)
 
 with right:
-    st.subheader("权重分布")
-    if PORTFOLIO_PATH.exists():
-        weights_df = pd.read_parquet(PORTFOLIO_PATH, engine="pyarrow")
-    else:
-        weights_df = pd.DataFrame(columns=["listing_id", "weight"])
-
-    if weights_df.empty:
+    st.subheader("权重扇形图")
+    chart_df = _decorate_with_universe(_current_targets())
+    if chart_df.empty:
         st.info("暂无组合数据。")
     else:
-        weights_df["weight"] = pd.to_numeric(weights_df.get("weight"), errors="coerce").fillna(0.0)
-        total_weight = float(weights_df["weight"].sum())
-        if total_weight <= 0:
+        chart_df["target_weight"] = pd.to_numeric(chart_df["target_weight"], errors="coerce").fillna(0.0)
+        total, is_close, _ = validate_weights(chart_df[["target_weight"]])
+        if total == 0:
             st.info("请填写权重")
         else:
-            fig = px.pie(weights_df, values="weight", names="listing_id", title="Portfolio Weights")
+            if not is_close:
+                st.warning(f"当前权重合计 {total:.6f}，未接近 1.0，仍可查看分布。")
+            chart_df["display_name"] = chart_df["name"]
+            chart_df.loc[chart_df["display_name"] == "(name unknown)", "display_name"] = chart_df["ticker"].fillna("")
+            chart_df.loc[chart_df["display_name"].astype(str).str.strip() == "", "display_name"] = "(name unknown)"
+            chart_df["weight_pct"] = chart_df["target_weight"] * 100.0
+            fig = px.pie(
+                chart_df,
+                values="weight_pct",
+                names="display_name",
+                hover_data=["listing_id", "target_weight", "region", "exchange", "ticker"],
+                title=f"{DEFAULT_PORTFOLIO_ID} @ {effective_date}",
+            )
             st.plotly_chart(fig, use_container_width=True)
