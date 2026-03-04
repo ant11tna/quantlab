@@ -401,7 +401,7 @@ def render_data_health() -> None:
 
 
 
-def _run_update_stream_ui(force_update_all: bool, *, sidebar: bool = False) -> None:
+def _run_update_stream_ui(force_update_all: bool, *, sidebar: bool = False, rerun_after: bool = True) -> None:
     """Run update_all_stream and render progress/log/error/done in current container."""
     target = st.sidebar if sidebar else st
     progress = target.progress(0)
@@ -445,7 +445,8 @@ def _run_update_stream_ui(force_update_all: bool, *, sidebar: bool = False) -> N
                 )
 
     st.cache_data.clear()
-    st.rerun()
+    if rerun_after:
+        st.rerun()
 
 def render_quick_actions() -> None:
     """Render quick-action buttons and homepage update trigger."""
@@ -462,6 +463,38 @@ def render_quick_actions() -> None:
         force_update_all = bool(st.session_state.get("force_update_all", False))
         if st.button(t("home.quick_actions.update_all"), use_container_width=True, key="qa_update_all"):
             _run_update_stream_ui(force_update_all, sidebar=False)
+
+        if st.button("更新数据并生成Run", use_container_width=True, key="qa_update_all_and_run"):
+            _run_update_stream_ui(force_update_all, sidebar=False, rerun_after=False)
+
+            from ui.actions.run_backtest import iter_backtest_output
+
+            st.info("开始执行回测并生成 Run，请稍候…")
+            output_holder = st.empty()
+            lines: list[str] = []
+            max_lines = 200
+            return_code = 1
+            marker_prefix = "[process-exit] returncode="
+
+            for line in iter_backtest_output():
+                if isinstance(line, str) and line.startswith(marker_prefix):
+                    try:
+                        return_code = int(line[len(marker_prefix) :])
+                    except ValueError:
+                        return_code = 1
+
+                lines.append(line)
+                if len(lines) > max_lines:
+                    lines = lines[-max_lines:]
+                output_holder.code("\n".join(lines), language="bash")
+
+            if return_code == 0:
+                st.success("回测完成并已生成新 Run。可前往 Runs 页面刷新查看。")
+            else:
+                st.error(f"回测执行失败（returncode={return_code}）。请查看上方日志。")
+
+            st.caption("提示：完成后去 Runs 页面刷新即可看到新 run。")
+            st.rerun()
 
     st.caption(
         t(
