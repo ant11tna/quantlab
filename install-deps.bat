@@ -7,7 +7,7 @@ echo.
 
 python -m pip install --upgrade pip
 
-pip install -q streamlit pandas pyarrow pyyaml loguru
+pip install -q streamlit plotly pandas pyarrow pyyaml loguru
 pip install -q numpy exchange_calendars
 
 echo.

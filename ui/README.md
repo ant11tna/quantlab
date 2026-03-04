@@ -108,7 +108,7 @@ streamlit run ui/pages/1_runs.py
 ## Dependencies
 
 ```bash
-pip install streamlit pandas pyarrow loguru pyyaml
+pip install streamlit plotly pandas pyarrow loguru pyyaml
 # Optional for better charts:
 pip install streamlit-echarts
 ```
