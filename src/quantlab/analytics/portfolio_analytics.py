@@ -15,6 +15,9 @@ def _normalize_day(ts_like: str | datetime) -> pd.Timestamp:
     return pd.Timestamp(ts_like).normalize()
 
 
+_ONE_DAY = pd.Timedelta(days=1)
+
+
 def run_portfolio_analytics(
     portfolio_id: str,
     effective_date: str,
@@ -59,7 +62,7 @@ def run_portfolio_analytics(
     bars = market_store.get_bars(
         listing_ids=listing_ids,
         start=start_ts,
-        end=end_ts,
+        end=(end_ts + _ONE_DAY - pd.Timedelta(nanoseconds=1)),
         freq=freq,
         fields=[price_field],
     )
@@ -75,16 +78,22 @@ def run_portfolio_analytics(
     )
     prices = prices.reindex(columns=listing_ids)
 
-    asset_rets = prices.pct_change()
-    aligned_rets = asset_rets.dropna(how="any")
+    asset_rets = prices.pct_change(fill_method=None)
+    aligned_rets = asset_rets.dropna(how="all")
 
     if aligned_rets.empty:
         raise ValueError(
-            "Aligned returns are empty after dropna(how='any'). Coverage gap is too large; "
+            "Aligned returns are empty after dropna(how='all'). Coverage gap is too large; "
             "check Slice2 coverage panel or shrink the date range."
         )
 
-    port_ret = aligned_rets.dot(weights)
+    weighted_rets = aligned_rets.mul(weights, axis=1)
+    available_weight = aligned_rets.notna().mul(weights, axis=1).sum(axis=1)
+    port_ret = weighted_rets.sum(axis=1, min_count=1).div(available_weight.where(available_weight > 0))
+    port_ret = port_ret.dropna()
+    if port_ret.empty:
+        raise ValueError("Portfolio returns are empty after available-weight normalization")
+
     nav = float(base_nav) * (1.0 + port_ret).cumprod()
 
     returns_df = port_ret.rename("ret").to_frame().reset_index()
@@ -107,7 +116,8 @@ def run_portfolio_analytics(
         "aligned_start": pd.Timestamp(aligned_rets.index.min()).date().isoformat(),
         "aligned_end": pd.Timestamp(aligned_rets.index.max()).date().isoformat(),
         "weight_sum": weight_sum,
-        "note": "dropna alignment used; middle gaps not checked",
+        "n_rows_port_ret": int(len(port_ret)),
+        "note": "dropna(how='all') + available-weight normalization used",
     }
 
     analytics_dir = Path("data/analytics")
