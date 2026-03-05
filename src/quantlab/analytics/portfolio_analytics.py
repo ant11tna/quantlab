@@ -8,7 +8,9 @@ import pandas as pd
 
 from quantlab.analytics.metrics import compute_metrics
 from quantlab.market.store import MarketStore
+from quantlab.portfolio.rebalance import compute_portfolio_from_weights
 from quantlab.portfolio.store import PortfolioStore
+from quantlab.portfolio.weights_timeline import build_weights_timeline
 
 
 def _normalize_day(ts_like: str | datetime) -> pd.Timestamp:
@@ -30,8 +32,9 @@ def run_portfolio_analytics(
     price_field: str = "close",
     base_nav: float = 1.0,
 ) -> dict:
-    """Run static-weight portfolio analytics with close-based returns."""
+    """Run dynamic-weight portfolio analytics with effective_date rebalances."""
     _ = universe_dir
+    _ = effective_date
 
     start_ts = _normalize_day(start)
     end_ts = _normalize_day(end)
@@ -40,24 +43,22 @@ def run_portfolio_analytics(
 
     targets = portfolio_store.load_targets()
     if targets.empty:
-        raise ValueError("No portfolio targets found in PortfolioStore")
+        raise ValueError("No portfolio targets found in PortfolioStore; check Slice2 coverage check")
 
-    target_mask = (
-        (targets["portfolio_id"].astype(str) == str(portfolio_id))
-        & (targets["effective_date"].astype(str) == str(effective_date))
+    targets_for_portfolio = targets[targets["portfolio_id"].astype(str) == str(portfolio_id)].copy()
+    if targets_for_portfolio.empty:
+        raise ValueError(
+            f"No targets found for portfolio_id={portfolio_id}; check Slice2 coverage check and target setup"
+        )
+
+    targets_for_portfolio["target_weight"] = (
+        pd.to_numeric(targets_for_portfolio["target_weight"], errors="coerce").fillna(0.0)
     )
-    target_rows = targets.loc[target_mask].copy()
-    if target_rows.empty:
-        raise ValueError(f"No targets found for portfolio_id={portfolio_id}, effective_date={effective_date}")
-
-    target_rows["target_weight"] = pd.to_numeric(target_rows["target_weight"], errors="coerce").fillna(0.0)
-    target_rows = target_rows[target_rows["target_weight"] > 0].copy()
-    if target_rows.empty:
-        raise ValueError("All target weights are <= 0 after filtering")
-
-    weights = target_rows.set_index("listing_id")["target_weight"].astype(float)
-    weight_sum = float(weights.sum())
-    listing_ids = weights.index.tolist()
+    targets_for_portfolio["listing_id"] = targets_for_portfolio["listing_id"].astype(str)
+    positive_any = targets_for_portfolio.groupby("listing_id")["target_weight"].max()
+    listing_ids = positive_any[positive_any > 0].index.astype(str).tolist()
+    if not listing_ids:
+        raise ValueError("All target weights are <= 0; check Slice2 coverage check and rebalance targets")
 
     bars = market_store.get_bars(
         listing_ids=listing_ids,
@@ -66,58 +67,76 @@ def run_portfolio_analytics(
         freq=freq,
         fields=[price_field],
     )
-
     if bars.empty:
-        raise ValueError("No market bars found for selected listings/range")
+        raise ValueError("No market bars found for selected listings/range; check Slice2 coverage check")
     if price_field not in bars.columns:
         raise ValueError(f"Requested price field '{price_field}' is missing from MarketStore result")
 
-    prices = (
-        bars.pivot_table(index="ts", columns="listing_id", values=price_field, aggfunc="last")
-        .sort_index()
-    )
+    prices = bars.pivot_table(index="ts", columns="listing_id", values=price_field, aggfunc="last").sort_index()
+    prices.index = pd.to_datetime(prices.index).normalize()
     prices = prices.reindex(columns=listing_ids)
+    prices = prices[~prices.isna().all(axis=1)]
+    if prices.empty:
+        raise ValueError("Price matrix empty after drop-all-NaN rows; check Slice2 coverage check")
 
-    asset_rets = prices.pct_change(fill_method=None)
-    aligned_rets = asset_rets.dropna(how="all")
+    coverage_start = pd.Timestamp(prices.index.min()).normalize()
+    coverage_end = pd.Timestamp(prices.index.max()).normalize()
+    if pd.isna(coverage_start) or pd.isna(coverage_end):
+        raise ValueError("Unable to infer market coverage bounds; check Slice2 coverage check")
 
-    if aligned_rets.empty:
+    start_clamped = max(start_ts, coverage_start)
+    end_clamped = min(end_ts, coverage_end)
+    if end_clamped < start_clamped:
         raise ValueError(
-            "Aligned returns are empty after dropna(how='all'). Coverage gap is too large; "
-            "check Slice2 coverage panel or shrink the date range."
+            "Requested range outside market coverage; check Slice2 coverage check and shrink date range"
         )
 
-    weighted_rets = aligned_rets.mul(weights, axis=1)
-    available_weight = aligned_rets.notna().mul(weights, axis=1).sum(axis=1)
-    port_ret = weighted_rets.sum(axis=1, min_count=1).div(available_weight.where(available_weight > 0))
-    port_ret = port_ret.dropna()
-    if port_ret.empty:
-        raise ValueError("Portfolio returns are empty after available-weight normalization")
+    weights_timeline = build_weights_timeline(
+        targets_df=targets_for_portfolio,
+        portfolio_id=portfolio_id,
+        start=start_clamped,
+        end=end_clamped,
+        freq="1d",
+    )
 
-    nav = float(base_nav) * (1.0 + port_ret).cumprod()
+    daily_index = pd.date_range(start=weights_timeline.index.min(), end=weights_timeline.index.max(), freq="D")
+    prices_daily = prices.reindex(daily_index).ffill().reindex(weights_timeline.index)
 
-    returns_df = port_ret.rename("ret").to_frame().reset_index()
-    nav_df = nav.rename("nav").to_frame().reset_index()
+    portfolio = compute_portfolio_from_weights(prices=prices_daily, weights_timeline=weights_timeline, base_nav=base_nav)
 
-    metrics = compute_metrics(port_ret, nav)
-    if abs(weight_sum - 1.0) > 1e-3:
-        metrics["weight_sum_note"] = f"weight_sum={weight_sum:.6f}, not close to 1.0"
+    returns = portfolio["returns"]
+    nav = portfolio["nav"]
+    contribution_df = portfolio["contribution"].copy()
+    contribution_df.index.name = "ts"
+    turnover_df = portfolio["turnover_df"].copy()
+
+    returns_df = returns.to_frame().reset_index().rename(columns={returns.index.name or "index": "ts"})
+    nav_df = nav.to_frame().reset_index().rename(columns={nav.index.name or "index": "ts"})
+
+    metrics = compute_metrics(returns, nav)
+    metrics.update(portfolio["turnover_summary"])
+
+    aligned_start = pd.Timestamp(returns.index.min()).date().isoformat()
+    aligned_end = pd.Timestamp(returns.index.max()).date().isoformat()
 
     meta = {
         "portfolio_id": str(portfolio_id),
         "effective_date": str(effective_date),
         "start": start_ts.date().isoformat(),
         "end": end_ts.date().isoformat(),
+        "coverage_start": coverage_start.date().isoformat(),
+        "coverage_end": coverage_end.date().isoformat(),
+        "start_clamped": start_clamped.date().isoformat(),
+        "end_clamped": end_clamped.date().isoformat(),
         "freq": str(freq),
         "price_field": str(price_field),
         "n_assets": int(len(listing_ids)),
-        "n_rows_raw": int(len(asset_rets)),
-        "n_rows_aligned": int(len(aligned_rets)),
-        "aligned_start": pd.Timestamp(aligned_rets.index.min()).date().isoformat(),
-        "aligned_end": pd.Timestamp(aligned_rets.index.max()).date().isoformat(),
-        "weight_sum": weight_sum,
-        "n_rows_port_ret": int(len(port_ret)),
-        "note": "dropna(how='all') + available-weight normalization used",
+        "n_rows_raw": int(len(prices)),
+        "n_rows_aligned": int(len(returns)),
+        "aligned_start": aligned_start,
+        "aligned_end": aligned_end,
+        "n_rows_port_ret": int(len(returns)),
+        "note": "dynamic weights timeline + daily forward-fill prices",
     }
 
     analytics_dir = Path("data/analytics")
@@ -126,9 +145,11 @@ def run_portfolio_analytics(
     nav_path = analytics_dir / "portfolio_nav.parquet"
     returns_path = analytics_dir / "portfolio_returns.parquet"
     metrics_path = analytics_dir / "portfolio_metrics.json"
+    contribution_path = analytics_dir / "portfolio_contribution.parquet"
 
     nav_df.to_parquet(nav_path, engine="pyarrow", index=False)
     returns_df.to_parquet(returns_path, engine="pyarrow", index=False)
+    contribution_df.reset_index().to_parquet(contribution_path, engine="pyarrow", index=False)
     with metrics_path.open("w", encoding="utf-8") as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 
@@ -136,6 +157,7 @@ def run_portfolio_analytics(
         "nav": str(nav_path),
         "returns": str(returns_path),
         "metrics": str(metrics_path),
+        "contribution": str(contribution_path),
     }
 
     return {
@@ -143,4 +165,6 @@ def run_portfolio_analytics(
         "returns_df": returns_df,
         "metrics": metrics,
         "meta": meta,
+        "contribution_df": contribution_df,
+        "turnover_df": turnover_df,
     }

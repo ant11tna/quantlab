@@ -1,3 +1,4 @@
+from .rebalance import compute_portfolio_from_weights
 from .store import PortfolioStore
 from .types import (
     DEFAULT_BASE_CURRENCY,
@@ -7,6 +8,7 @@ from .types import (
     TARGET_COLUMNS,
 )
 from .utils import enrich_targets_with_universe, normalize_weights, validate_weights
+from .weights_timeline import build_weights_timeline
 
 __all__ = [
     "PortfolioStore",
@@ -18,4 +20,6 @@ __all__ = [
     "validate_weights",
     "normalize_weights",
     "enrich_targets_with_universe",
+    "build_weights_timeline",
+    "compute_portfolio_from_weights",
 ]
