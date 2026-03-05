@@ -14,11 +14,22 @@ from quantlab.portfolio.store import PortfolioStore
 from quantlab.universe.store import UniverseStore
 
 st.set_page_config(page_title="Portfolio Analytics", page_icon="📈", layout="wide")
-st.title("Portfolio Analytics (M1)")
+st.title("Portfolio Analytics (M2)")
+
 
 portfolio_store = PortfolioStore(base_dir="data/portfolio")
 market_store = MarketStore(base_dir="data/market", universe_dir="data/universe")
 universe_store = UniverseStore(base_dir="data/universe")
+
+
+def _format_pct(v: object) -> object:
+    try:
+        if pd.isna(v):
+            return v
+        return f"{float(v) * 100:.2f}%"
+    except Exception:  # noqa: BLE001
+        return v
+
 
 portfolios_df = portfolio_store.load_portfolios()
 portfolio_options = ["default"]
@@ -51,6 +62,7 @@ with col1:
 with col2:
     end_date = st.date_input("end", value=date.today())
 
+show_contribution = st.checkbox("显示贡献(Contribution)", value=True)
 run_clicked = st.button("运行分析", type="primary")
 
 if run_clicked:
@@ -74,12 +86,25 @@ if run_clicked:
         st.error(f"运行失败: {exc}")
     else:
         nav_df = result["nav_df"].copy()
-        returns_df = result["returns_df"].copy()
         metrics = result["metrics"]
         meta = result["meta"]
+        contribution_df = result.get("contribution_df", pd.DataFrame()).copy()
+        turnover_df = result.get("turnover_df", pd.DataFrame()).copy()
 
         st.subheader("指标")
-        st.dataframe(pd.DataFrame([metrics]), use_container_width=True, hide_index=True)
+        metrics_display = pd.DataFrame([metrics])
+        for key in ["total_return", "cagr", "annual_vol", "max_drawdown"]:
+            if key in metrics_display.columns:
+                metrics_display[key] = metrics_display[key].map(_format_pct)
+        st.dataframe(metrics_display, use_container_width=True, hide_index=True)
+
+        st.subheader("换手摘要")
+        turn_col1, turn_col2, turn_col3 = st.columns(3)
+        turn_col1.metric("rebalance_count", f"{int(metrics.get('rebalance_count', 0))}")
+        turn_col2.metric("total_turnover", f"{float(metrics.get('total_turnover', 0.0)):.4f}")
+        turn_col3.metric("avg_daily_turnover", f"{float(metrics.get('avg_daily_turnover', 0.0)):.6f}")
+        if not turnover_df.empty:
+            st.dataframe(turnover_df, use_container_width=True, hide_index=True)
 
         st.subheader("NAV 曲线")
         fig_nav = px.line(nav_df, x="ts", y="nav", title="Portfolio NAV")
@@ -90,6 +115,22 @@ if run_clicked:
         drawdown = (nav_series / nav_series.cummax() - 1.0).rename("drawdown").reset_index()
         fig_dd = px.line(drawdown, x="ts", y="drawdown", title="Portfolio Drawdown")
         st.plotly_chart(fig_dd, use_container_width=True)
+
+        if show_contribution and not contribution_df.empty:
+            st.subheader("资产贡献(Contribution)")
+            contrib_long = (
+                contribution_df.reset_index()
+                .melt(id_vars=["ts"], var_name="asset", value_name="contribution")
+                .dropna(subset=["contribution"])
+            )
+            fig_contrib = px.area(
+                contrib_long,
+                x="ts",
+                y="contribution",
+                color="asset",
+                title="Daily Contribution by Asset",
+            )
+            st.plotly_chart(fig_contrib, use_container_width=True)
 
         st.subheader("元信息")
         st.json(meta)
@@ -108,9 +149,10 @@ if run_clicked:
             )
             merged["name"] = merged["name"].fillna("").astype(str).str.strip()
             merged.loc[merged["name"] == "", "name"] = "(name unknown)"
+            merged["target_weight"] = pd.to_numeric(merged["target_weight"], errors="coerce").fillna(0.0).map(_format_pct)
             st.subheader("组合成分")
             st.dataframe(
-                merged[["listing_id", "name", "target_weight"]].sort_values("target_weight", ascending=False),
+                merged[["listing_id", "name", "target_weight"]],
                 use_container_width=True,
                 hide_index=True,
             )
